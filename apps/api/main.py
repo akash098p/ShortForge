@@ -11,8 +11,9 @@ from services.broll import find_broll, make_broll_plan
 from services.media import apply_transition_metadata
 from pathlib import Path
 import uuid
+import os
 
-app=FastAPI(title="ShortForge API",version="0.8.0")
+app=FastAPI(title="ShortForge API",version="1.0.0")
 
 class AnalyzeRequest(BaseModel):
     source_name:str
@@ -21,10 +22,20 @@ class AnalyzeRequest(BaseModel):
     width:int=Field(ge=1)
     height:int=Field(ge=1)
     fps:float=Field(default=30,gt=0)
-    preset:str="viral"\n    broll_dir:str|None=None
+    preset:str="viral"
+    broll_dir:str|None=None
+
+class RenderPlanRequest(BaseModel):
+    source_path:str
+    output_path:str
+    segments:list[dict]
+    captions:list[dict]=[]
+    reframe:list[dict]=[]
+    preset:str="viral"
 
 @app.get("/health")
-def health(): return {"ok":True,"service":"shortforge-api","version":"0.8.0"}
+def health():
+    return {"ok":True,"service":"shortforge-api","version":"1.0.0"}
 
 @app.post("/v1/analyze")
 def analyze(req:AnalyzeRequest):
@@ -41,27 +52,25 @@ def analyze(req:AnalyzeRequest):
     active=build_highlight_windows(req.duration,silences)
     captions=make_caption_groups([CaptionWord(w["text"],float(w["start"]),float(w["end"])) for w in words])
     reframe=build_reframe_track(req.width,req.height,req.duration,tracking or None)
-    plan=build_plan(req.duration,req.preset,active or None,scenes,words,beats)\n    assets=find_broll(req.broll_dir) if req.broll_dir else []\n    plan["segments"]=make_broll_plan(plan["segments"],assets)
+    plan=build_plan(req.duration,req.preset,active or None,scenes,words,beats)
+    assets=find_broll(req.broll_dir) if req.broll_dir else []
+    plan["segments"]=make_broll_plan(plan["segments"],assets)
     plan["segments"]=apply_transition_metadata(plan["segments"],beats)
     return {"project":req.model_dump(),"analysis":{"silences":[s.__dict__ for s in silences],"scenes":scenes,"transcript_words":words,"tracking":tracking,"beats":beats},"captions":captions,"segments":plan["segments"],"reframe":reframe,"broll_assets":assets,"status":"ready"}
-
-class RenderPlanRequest(BaseModel):
-    source_path:str
-    output_path:str
-    segments:list[dict]
-    captions:list[dict]=[]
 
 @app.post("/v1/render-plan")
 def render_plan_endpoint(req:RenderPlanRequest):
     try:
         from services.media import render_plan
-        subtitle=None; subtitle_path=None
+        subtitle_path=None
         if req.captions:
-            subtitle_path=Path("/tmp/shortforge-render")/f"{uuid.uuid4().hex}.ass"
+            subtitle_path=Path("shortforge-render")/f"{uuid.uuid4().hex}.ass"
             subtitle_path.parent.mkdir(parents=True,exist_ok=True)
-            to_ass(req.captions,str(subtitle_path),req.preset); subtitle=str(subtitle_path)
-        render_plan(req.source_path,req.output_path,req.segments,subtitle,req.reframe)
+            to_ass(req.captions,str(subtitle_path),req.preset)
+        output=Path(req.output_path)
+        output.parent.mkdir(parents=True,exist_ok=True)
+        render_plan(req.source_path,str(output),req.segments,str(subtitle_path) if subtitle_path else None,req.reframe)
         if subtitle_path: subtitle_path.unlink(missing_ok=True)
-        return {"status":"complete","output_path":req.output_path,"captions_burned":bool(req.captions)}
+        return {"status":"complete","output_path":str(output),"size_bytes":os.path.getsize(output),"captions_burned":bool(req.captions)}
     except Exception as e:
         raise HTTPException(status_code=400,detail=str(e))
