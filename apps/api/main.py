@@ -11,12 +11,15 @@ from services.broll import find_broll, make_broll_plan
 from services.media import apply_transition_metadata
 from pathlib import Path
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 import uuid
 import os
 
 app=FastAPI(title="ShortForge API",version="1.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000","http://127.0.0.1:3000"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 UPLOAD_DIR=Path("shortforge-uploads"); UPLOAD_DIR.mkdir(parents=True,exist_ok=True)
+RENDER_DIR=Path("shortforge-render"); RENDER_DIR.mkdir(parents=True,exist_ok=True)
+app.mount("/outputs", StaticFiles(directory=str(RENDER_DIR)), name="outputs")
 
 class AnalyzeRequest(BaseModel):
     source_name:str
@@ -78,7 +81,7 @@ def render_plan_endpoint(req:RenderPlanRequest):
         from services.media import render_plan
         subtitle_path=None
         if req.captions:
-            subtitle_path=Path("shortforge-render")/f"{uuid.uuid4().hex}.ass"
+            subtitle_path=RENDER_DIR/f"{uuid.uuid4().hex}.ass"
             subtitle_path.parent.mkdir(parents=True,exist_ok=True)
             to_ass(req.captions,str(subtitle_path),req.preset)
         output=Path(req.output_path)
