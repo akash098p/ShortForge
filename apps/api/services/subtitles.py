@@ -1,29 +1,42 @@
-def to_ass(groups:list[dict],output:str,font_size:int=72)->None:
-    header="""[Script Info]
-ScriptType: v4.00+
-PlayResX: 1080
-PlayResY: 1920
-[V4+ Styles]
-Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding
-Style: Normal,Arial,72,&H00FFFFFF,&H00FFFFFF,&H00101010,&H80000000,1,0,0,0,100,100,0,0,1,5,2,2,60,60,360,1
-Style: Emphasis,Arial,76,&H0000FFB8,&H0000FFB8,&H00101010,&H80000000,1,0,0,0,100,100,0,0,1,5,2,2,60,60,360,1
-[Events]
-Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
-"""
-    def ts(v):
-        h=int(v//3600);m=int(v%3600//60);s=v%60
-        return f"{h}:{m:02d}:{s:05.2f}"
-    with open(output,"w",encoding="utf-8") as f:
-        f.write(header)
-        for g in groups:
-            words=g.get("words",[])
-            if not words:
-                f.write(f"Dialogue: 0,{ts(g['start'])},{ts(g['end'])},Normal,,0,0,0,,{g.get('text','')}\n"); continue
-            # ASS karaoke tags make each word appear progressively.
+from pathlib import Path
+import html, re
+
+def _ass_time(seconds:float)->str:
+    seconds=max(0,float(seconds)); h=int(seconds//3600); m=int((seconds%3600)//60); s=seconds%60
+    return f"{h}:{m:02d}:{s:05.2f}"
+
+def _ass_escape(text:str)->str:
+    return text.replace("\\","\\\\").replace("{","\\{").replace("}","\\}").replace("\n"," ")
+
+def to_ass(groups:list[dict],path:str,preset:str="viral")->str:
+    styles={
+      "viral":("Arial Black",68,"\x1c&H00FFFFFF&","\x1c&H0000D7FF&"),
+      "podcast":("Arial",58,"\x1c&H00FFFFFF&","\x1c&H0000FFFF&"),
+      "cinematic":("Montserrat",62,"\x1c&H00FFFFFF&","\x1c&H00C8C8C8&"),
+      "energy":("Arial Black",72,"\x1c&H00FFFFFF&","\x1c&H0000A5FF&")
+    }
+    font,size,primary,emph=styles.get(preset,styles["viral"])
+    lines=[
+      "[Script Info]","ScriptType: v4.00+","PlayResX: 1080","PlayResY: 1920",
+      "[V4+ Styles]","Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Alignment, MarginL, MarginR, MarginV, Encoding",
+      f"Style: Default,{font},{size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H99000000,1,0,5,70,70,360,1",
+      "[Events]","Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
+    ]
+    for g in groups:
+        words=g.get("words",[])
+        for i,w in enumerate(words):
+            start=float(w["start"]); end=float(w["end"])
+            # Display the whole phrase while highlighting the currently spoken word.
             parts=[]
-            for w in words:
-                dur=max(1,round((float(w["end"])-float(w["start"]))*100))
-                text=str(w["text"]).replace("{","").replace("}","")
-                tag="\\c&H00FFB8&\\fs76" if w.get("emphasis") else ""
-                parts.append(f"{{\\k{dur}{tag}}}{text}")
-            f.write(f"Dialogue: 0,{ts(g['start'])},{ts(g['end'])},Normal,,0,0,0,,{' '.join(parts)}\n")
+            for j,x in enumerate(words):
+                t=_ass_escape(x["text"])
+                if j==i:
+                    parts.append("{\\c"+emph+"}"+t+"{\\c"+primary+"}")
+                else: parts.append(t)
+            text=" ".join(parts)
+            # Scale pop on the active word.
+            active=_ass_escape(w["text"])
+            text=text.replace("{\\c"+emph+"}"+active+"{\\c"+primary+"}","{\\c"+emph+"\\fscx108\\fscy108}"+active+"{\\fscx100\\fscy100\\c"+primary+"}")
+            lines.append(f"Dialogue: 0,{_ass_time(g['start'])},{_ass_time(g['end'])},Default,,0,0,0,,{{\\an5\\pos(540,1510)}}{text}")
+    Path(path).write_text("\n".join(lines),encoding="utf-8")
+    return path
