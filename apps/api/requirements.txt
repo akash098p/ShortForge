@@ -4,3 +4,4 @@ pydantic>=2.8
 ultralytics>=8.3
 opencv-python-headless>=4.10
 python-multipart>=0.0.20
+audioop-lts>=0.2.1
