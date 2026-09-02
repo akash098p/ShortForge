@@ -31,3 +31,38 @@ def build_highlight_windows(duration: float, silences: list[Silence], max_gap: f
         cursor=max(cursor,b)
     if cursor<duration: windows.append({"start":round(cursor,3),"end":round(duration,3)})
     return [w for w in windows if w["end"]-w["start"]>=0.5]
+
+def detect_beats(path: str, min_bpm: int = 70, max_bpm: int = 180) -> list[float]:
+    """Estimate musical beat timestamps from an audio/video source.
+    Uses FFmpeg to extract mono PCM, then a lightweight energy/onset detector.
+    """
+    import wave, audioop, math, tempfile, os
+    import numpy as np
+    wav=None
+    try:
+        fd,wav=tempfile.mkstemp(suffix=".wav"); os.close(fd)
+        subprocess.run(["ffmpeg","-y","-v","error","-i",path,"-vn","-ac","1","-ar","22050","-c:a","pcm_s16le",wav],check=True)
+        with wave.open(wav,"rb") as f:
+            rate=f.getframerate(); raw=f.readframes(f.getnframes())
+        audio=np.frombuffer(raw,dtype=np.int16).astype(np.float32)
+        if len(audio)<rate//2:return []
+        hop=256; win=1024
+        rms=[]
+        for i in range(0,max(1,len(audio)-win),hop):
+            rms.append(float(np.sqrt(np.mean(audio[i:i+win]**2)+1e-9)))
+        env=np.asarray(rms)
+        diff=np.maximum(0,np.diff(env,prepend=env[:1]))
+        threshold=float(np.mean(diff)+1.25*np.std(diff))
+        min_gap=60.0/max_bpm
+        beats=[]; last=-1e9
+        for i,v in enumerate(diff):
+            t=i*hop/rate
+            if v>threshold and t-last>=min_gap:
+                beats.append(round(t,3)); last=t
+        return beats
+    except Exception:
+        return []
+    finally:
+        if wav:
+            try: os.remove(wav)
+            except OSError: pass
