@@ -7,6 +7,7 @@ from services.captions import CaptionWord, make_caption_groups
 from services.subtitles import to_ass
 from services.reframe import build_reframe_track
 from services.tracking import detect_people, smooth_track, recover_track
+from services.broll import find_broll, make_broll_plan
 from pathlib import Path
 import uuid
 
@@ -19,7 +20,7 @@ class AnalyzeRequest(BaseModel):
     width:int=Field(ge=1)
     height:int=Field(ge=1)
     fps:float=Field(default=30,gt=0)
-    preset:str="viral"
+    preset:str="viral"\n    broll_dir:str|None=None
 
 @app.get("/health")
 def health(): return {"ok":True,"service":"shortforge-api","version":"0.8.0"}
@@ -39,8 +40,8 @@ def analyze(req:AnalyzeRequest):
     active=build_highlight_windows(req.duration,silences)
     captions=make_caption_groups([CaptionWord(w["text"],float(w["start"]),float(w["end"])) for w in words])
     reframe=build_reframe_track(req.width,req.height,req.duration,tracking or None)
-    plan=build_plan(req.duration,req.preset,active or None,scenes,words,beats)
-    return {"project":req.model_dump(),"analysis":{"silences":[s.__dict__ for s in silences],"scenes":scenes,"transcript_words":words,"tracking":tracking,"beats":beats},"captions":captions,"segments":plan["segments"],"reframe":reframe,"status":"ready"}
+    plan=build_plan(req.duration,req.preset,active or None,scenes,words,beats)\n    assets=find_broll(req.broll_dir) if req.broll_dir else []\n    plan["segments"]=make_broll_plan(plan["segments"],assets)
+    return {"project":req.model_dump(),"analysis":{"silences":[s.__dict__ for s in silences],"scenes":scenes,"transcript_words":words,"tracking":tracking,"beats":beats},"captions":captions,"segments":plan["segments"],"reframe":reframe,"broll_assets":assets,"status":"ready"}
 
 class RenderPlanRequest(BaseModel):
     source_path:str
