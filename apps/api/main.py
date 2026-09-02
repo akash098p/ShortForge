@@ -2,8 +2,10 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from services.edit_plan import build_plan
 from services.analyzer import detect_silences, detect_scenes, build_highlight_windows
+from services.transcription import transcribe
+from services.captions import CaptionWord, make_caption_groups
 
-app=FastAPI(title="ShortForge API",version="0.3.0")
+app=FastAPI(title="ShortForge API",version="0.4.0")
 
 class AnalyzeRequest(BaseModel):
     source_name:str
@@ -15,17 +17,19 @@ class AnalyzeRequest(BaseModel):
     preset:str="viral"
 
 @app.get("/health")
-def health(): return {"ok":True,"service":"shortforge-api","version":"0.3.0"}
+def health(): return {"ok":True,"service":"shortforge-api","version":"0.4.0"}
 
 @app.post("/v1/analyze")
 def analyze(req:AnalyzeRequest):
-    silences=[]; scenes=[]
+    silences=[]; scenes=[]; words=[]
     if req.source_path:
         try:
             silences=detect_silences(req.source_path)
             scenes=detect_scenes(req.source_path)
+            words=transcribe(req.source_path)
         except Exception as e:
             raise HTTPException(status_code=400,detail=f"media analysis failed: {e}")
     active=build_highlight_windows(req.duration,silences)
     plan=build_plan(req.duration,req.preset,active or None)
-    return {"project":req.model_dump(),"analysis":{"silences":[s.__dict__ for s in silences],"scenes":scenes},"segments":plan["segments"],"status":"ready"}
+    captions=make_caption_groups([CaptionWord(w["text"],float(w["start"]),float(w["end"])) for w in words])
+    return {"project":req.model_dump(),"analysis":{"silences":[s.__dict__ for s in silences],"scenes":scenes,"transcript_words":words},"captions":captions,"segments":plan["segments"],"status":"ready"}
