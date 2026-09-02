@@ -7,7 +7,7 @@ from services.captions import CaptionWord, make_caption_groups
 
 app=FastAPI(title="ShortForge API",version="0.4.0")
 
-class AnalyzeRequest(BaseModel):
+class RenderPlanRequest(BaseModel):\n    source_path:str\n    output_path:str\n    segments:list[dict]\n\n@app.post("/v1/render-plan")\ndef render_plan_endpoint(req:RenderPlanRequest):\n    try:\n        from services.media import render_plan\n        render_plan(req.source_path,req.output_path,req.segments)\n        return {"status":"complete","output_path":req.output_path}\n    except Exception as e:\n        raise HTTPException(status_code=400,detail=str(e))\n\nclass AnalyzeRequest(BaseModel):
     source_name:str
     source_path:str|None=None
     duration:float=Field(ge=0)
