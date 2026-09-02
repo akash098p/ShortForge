@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel, Field
 from services.edit_plan import build_plan
 from services.analyzer import detect_silences, detect_scenes, build_highlight_windows, detect_beats
@@ -10,10 +10,13 @@ from services.tracking import detect_people, smooth_track, recover_track
 from services.broll import find_broll, make_broll_plan
 from services.media import apply_transition_metadata
 from pathlib import Path
+from fastapi.middleware.cors import CORSMiddleware
 import uuid
 import os
 
 app=FastAPI(title="ShortForge API",version="1.0.0")
+app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000","http://127.0.0.1:3000"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+UPLOAD_DIR=Path("shortforge-uploads"); UPLOAD_DIR.mkdir(parents=True,exist_ok=True)
 
 class AnalyzeRequest(BaseModel):
     source_name:str
@@ -36,6 +39,17 @@ class RenderPlanRequest(BaseModel):
 @app.get("/health")
 def health():
     return {"ok":True,"service":"shortforge-api","version":"1.0.0"}
+
+
+@app.post("/v1/upload")
+async def upload_video(file: UploadFile = File(...)):
+    if not file.filename or not Path(file.filename).suffix.lower() in {".mp4",".mov",".mkv",".webm",".m4v",".avi"}:
+        raise HTTPException(status_code=400,detail="Unsupported video format")
+    name=f"{uuid.uuid4().hex}{Path(file.filename).suffix.lower()}"
+    target=UPLOAD_DIR/name
+    with target.open("wb") as out:
+        while chunk:=await file.read(1024*1024): out.write(chunk)
+    return {"source_path":str(target.resolve()),"source_name":file.filename}
 
 @app.post("/v1/analyze")
 def analyze(req:AnalyzeRequest):
