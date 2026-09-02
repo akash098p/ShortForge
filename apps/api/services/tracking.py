@@ -1,6 +1,6 @@
 from dataclasses import dataclass
-from pathlib import Path
-import json, shutil, subprocess
+import cv2
+from ultralytics import YOLO
 
 @dataclass
 class TrackPoint:
@@ -9,31 +9,44 @@ class TrackPoint:
     y: float
     confidence: float
 
-def detect_motion_points(path: str, sample_fps: float = 2.0) -> list[dict]:
-    """Lightweight tracking fallback based on frame-difference bounding boxes.
-    A future CV detector can replace this without changing the API contract.
+def detect_people(path: str, sample_fps: float = 3.0, model_name: str = "yolo11n.pt") -> list[dict]:
+    """Detect people at sampled frames and return center points for reframing.
+    The small YOLO model is used by default to keep local inference practical.
     """
-    if not shutil.which("ffmpeg"):
-        raise RuntimeError("ffmpeg is not installed")
-    # Keep analysis bounded; emit no guesses when a reliable detector is unavailable.
-    return []
+    cap=cv2.VideoCapture(path)
+    if not cap.isOpened(): raise RuntimeError(f"Unable to open video: {path}")
+    fps=cap.get(cv2.CAP_PROP_FPS) or 30.0
+    total=cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
+    duration=total/fps if total else 0
+    stride=max(1,int(round(fps/max(sample_fps,0.1))))
+    model=YOLO(model_name)
+    points=[]
+    i=0
+    while True:
+        ok,frame=cap.read()
+        if not ok: break
+        if i%stride==0:
+            result=model.predict(frame,classes=[0],conf=0.35,verbose=False)[0]
+            best=None
+            for box in result.boxes:
+                conf=float(box.conf[0])
+                x1,y1,x2,y2=[float(v) for v in box.xyxy[0]]
+                area=max(1,(x2-x1)*(y2-y1))
+                candidate=(area,conf,(x1+x2)/2,(y1+y2)/2)
+                if best is None or candidate[:2]>best[:2]: best=candidate
+            if best:
+                points.append({"time":i/fps,"x":best[2],"y":best[3],"confidence":best[1]})
+        i+=1
+    cap.release()
+    return points
 
-def smooth_track(points: list[dict], duration: float, max_jump: float = 180.0) -> list[dict]:
-    if not points:
-        return []
-    ordered=sorted(points,key=lambda p:float(p["time"]))
-    out=[dict(ordered[0])]
-    for p in ordered[1:]:
+def smooth_track(points:list[dict],duration:float,max_jump:float=180.0)->list[dict]:
+    if not points:return []
+    out=[dict(points[0])]
+    for p in points[1:]:
         prev=out[-1]
-        x=float(p["x"]); y=float(p["y"])
-        px=float(prev["x"]); py=float(prev["y"])
-        dx=max(-max_jump,min(max_jump,x-px))
-        dy=max(-max_jump,min(max_jump,y-py))
-        out.append({"time":min(duration,max(0,float(p["time"]))),"x":px+dx,"y":py+dy,"confidence":float(p.get("confidence",1.0))})
+        alpha=0.35
+        x=float(prev["x"])+(float(p["x"])-float(prev["x"]))*alpha
+        y=float(prev["y"])+(float(p["y"])-float(prev["y"]))*alpha
+        out.append({"time":min(duration,max(0,float(p["time"]))),"x":x,"y":y,"confidence":float(p.get("confidence",1))})
     return out
-
-def load_tracking_points(path: str) -> list[dict]:
-    p=Path(path)
-    if not p.exists(): return []
-    data=json.loads(p.read_text(encoding="utf-8"))
-    return data if isinstance(data,list) else data.get("points",[])
