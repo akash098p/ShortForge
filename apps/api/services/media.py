@@ -19,12 +19,19 @@ def ffprobe(path:str)->MediaInfo:
 def _escape_filter_path(path:str)->str:
     return path.replace("\\","/").replace(":","\\:")
 
+def _escape_expr(expr:str)->str:
+    """Escape commas used inside FFmpeg expressions.
+
+    FFmpeg's filter parser treats an unescaped comma as the separator
+    between filters. Functions such as if() and clip() therefore need
+    their commas escaped when embedded in a crop filter.
+    """
+    return expr.replace(",", "\\,")
+
 def _tracked_crop_filter(width:int,height:int,track:list[dict]|None,fps:float=30.0)->str:
     """Build a safe 9:16 crop filter with optional tracked center movement.
 
-    The crop rectangle is always kept inside the source frame. This is
-    especially important for portrait sources where the crop width equals
-    the input width, so x must remain exactly zero.
+    The crop rectangle is always kept inside the source frame.
     """
     target=9/16
     if width/height>=target:
@@ -34,10 +41,8 @@ def _tracked_crop_filter(width:int,height:int,track:list[dict]|None,fps:float=30
         cw_f=width
         ch_f=width/target
 
-    # Crop dimensions must be valid integer pixel dimensions for the source.
     cw=max(2,min(width,int(round(cw_f))))
     ch=max(2,min(height,int(round(ch_f))))
-    # Keep dimensions even for yuv420p where practical.
     if cw < width and cw % 2: cw-=1
     if ch < height and ch % 2: ch-=1
     max_x=max(0,width-cw)
@@ -60,7 +65,6 @@ def _tracked_crop_filter(width:int,height:int,track:list[dict]|None,fps:float=30
                 continue
             if not all(map(lambda v: v==v and abs(v)<1e12,(t,center))):
                 continue
-            # Track values are centers; convert to top-left crop coordinates.
             raw=center-crop_size/2
             start=max(0.0,min(float(limit),raw))
             vals.append((t,start))
@@ -68,7 +72,6 @@ def _tracked_crop_filter(width:int,height:int,track:list[dict]|None,fps:float=30
         if not vals:
             return str(float(limit)/2)
 
-        # De-duplicate timestamps so the generated expression stays valid.
         clean=[]
         for t,v in vals:
             if clean and abs(t-clean[-1][0])<1e-6:
@@ -79,7 +82,7 @@ def _tracked_crop_filter(width:int,height:int,track:list[dict]|None,fps:float=30
 
         e=f"clip({vals[-1][1]:.3f},0,{float(limit):.3f})"
         if len(vals)==1:
-            return e
+            return _escape_expr(e)
 
         for i in range(len(vals)-1,0,-1):
             t0,v0=vals[i-1]
@@ -87,11 +90,9 @@ def _tracked_crop_filter(width:int,height:int,track:list[dict]|None,fps:float=30
             dt=t1-t0
             if dt<=0:
                 continue
-            # clip the interpolated value as a final safety net against
-            # malformed/stale tracker coordinates.
             interp=f"clip({v0:.3f}+({v1-v0:.3f})*(t-{t0:.6f})/{dt:.6f},0,{float(limit):.3f})"
             e=f"if(lt(t,{t1:.6f}),{interp},{e})"
-        return e
+        return _escape_expr(e)
 
     x_expr=expr("x",max_x,cw)
     y_expr=expr("y",max_y,ch)
