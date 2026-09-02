@@ -6,7 +6,7 @@ from services.transcription import transcribe
 from services.captions import CaptionWord, make_caption_groups
 from services.subtitles import to_ass
 from services.reframe import build_reframe_track
-from services.tracking import detect_motion_points, smooth_track
+from services.tracking import detect_people, smooth_track
 from pathlib import Path
 import uuid
 
@@ -32,7 +32,7 @@ def analyze(req:AnalyzeRequest):
             silences=detect_silences(req.source_path)
             scenes=detect_scenes(req.source_path)
             words=transcribe(req.source_path)
-            tracking=smooth_track(detect_motion_points(req.source_path),req.duration)
+            tracking=smooth_track(detect_people(req.source_path),req.duration)
         except Exception as e:
             raise HTTPException(status_code=400,detail=f"media analysis failed: {e}")
     active=build_highlight_windows(req.duration,silences)
