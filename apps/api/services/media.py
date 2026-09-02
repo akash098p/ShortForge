@@ -1,130 +1,433 @@
 from dataclasses import dataclass
 from pathlib import Path
-import subprocess,json,shutil,tempfile
+import math, subprocess, json, shutil, tempfile
+
+OUT_W, OUT_H = 1080, 1920
+OUT_FPS = 30
+
+# Sources wider than this aspect ratio (w/h) are contain-fitted into the
+# 9:16 canvas with a blurred fill instead of cover-cropped, so landscape /
+# square footage is never blown up into a narrow, over-zoomed sliver.
+FIT_MAX_SOURCE_AR = 0.70
+
 
 @dataclass
 class MediaInfo:
-    duration:float
-    width:int
-    height:int
-    fps:float
+    duration: float
+    width: int
+    height: int
+    fps: float
 
-def ffprobe(path:str)->MediaInfo:
-    if not shutil.which("ffprobe"): raise RuntimeError("ffprobe is not installed")
-    data=json.loads(subprocess.check_output(["ffprobe","-v","error","-show_entries","format=duration:stream=width,height,r_frame_rate","-of","json",path],text=True))
-    stream=next(s for s in data["streams"] if "width" in s)
-    n,d=stream.get("r_frame_rate","30/1").split("/")
-    return MediaInfo(float(data["format"]["duration"]),int(stream["width"]),int(stream["height"]),float(n)/float(d))
 
-def _escape_filter_path(path:str)->str:
-    return path.replace("\\","/").replace(":","\\:")
+class RenderError(RuntimeError):
+    """Raised when an FFmpeg command fails; message carries the FFmpeg log."""
 
-def _escape_expr(expr:str)->str:
-    """Escape commas used inside FFmpeg expressions.
 
-    FFmpeg's filter parser treats an unescaped comma as the separator
-    between filters. Functions such as if() and clip() therefore need
-    their commas escaped when embedded in a crop filter.
+def _run(cmd: list[str], cwd: str | None = None) -> subprocess.CompletedProcess:
+    """Run an FFmpeg/ffprobe command in list form (no shell) and capture output.
+
+    Windows-safe: every argument is passed as its own list element, so filter
+    expressions and file paths are never reparsed by a shell. On a non-zero
+    exit, raise a RenderError whose message contains the real FFmpeg stderr so
+    the API can surface a useful error to the frontend. `cwd` is only used so
+    the subtitles filter can resolve a relative filename (FFmpeg's
+    filtergraph parser unescapes drive-letter colons inside option values, so
+    an absolute Windows path in `subtitles=` is unreliable across builds).
     """
-    return expr.replace(",", "\\,")
+    p = subprocess.run(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=cwd
+    )
+    if p.returncode != 0:
+        tail = (p.stderr or "").strip()
+        if len(tail) > 2000:
+            tail = "..." + tail[-2000:]
+        brief = " ".join(str(x) for x in cmd[:4])
+        raise RenderError(
+            f"FFmpeg command failed (exit {p.returncode}): {brief}\n{tail}"
+        )
+    return p
 
-def _tracked_crop_filter(width:int,height:int,track:list[dict]|None,fps:float=30.0)->str:
-    """Build a safe 9:16 crop filter with optional tracked center movement.
 
-    The crop rectangle is always kept inside the source frame.
+def ffprobe(path: str) -> MediaInfo:
+    if not shutil.which("ffprobe"):
+        raise RenderError("ffprobe is not installed")
+    try:
+        p = _run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration:stream=width,height,r_frame_rate",
+                "-of",
+                "json",
+                path,
+            ]
+        )
+    except RenderError as e:
+        raise RenderError(f"Could not read media file '{path}':\n{e}") from e
+    data = json.loads(p.stdout)
+    stream = next(s for s in data["streams"] if "width" in s)
+    n, d = stream.get("r_frame_rate", "30/1").split("/")
+    fps = float(n) / float(d) if float(d) != 0 else float(OUT_FPS)
+    return MediaInfo(
+        float(data["format"]["duration"]),
+        int(stream["width"]),
+        int(stream["height"]),
+        fps,
+    )
+
+
+def _escape_expr(expr: str) -> str:
+    """Escape FFmpeg filtergraph specials inside an expression/value.
+
+    FFmpeg's filter parser treats an unescaped comma as a filter separator and
+    an unescaped semicolon as a chain separator, so the commas used by
+    functions such as if() and clip() must be escaped whenever the expression
+    is embedded in a filter option. Colons separate option values and must
+    also be escaped (same technique used for Windows drive letters). Any
+    backslash must be doubled so av_get_token does not consume the next char.
     """
-    target=9/16
-    if width/height>=target:
-        cw_f=height*target
-        ch_f=height
+    return (
+        expr.replace("\\", "\\\\")
+        .replace(",", "\\,")
+        .replace(";", "\\;")
+        .replace(":", "\\:")
+    )
+
+
+def _escaped_filter_path(path: str) -> str:
+    """Turn a filesystem path into a value safe to embed in a filter option."""
+    return _escape_expr(Path(path).as_posix())
+
+
+def _sanitize_track(
+    track: list[dict] | None,
+    width: int,
+    height: int,
+    duration: float,
+    min_conf: float = 0.1,
+) -> list[dict] | None:
+    """Validate/normalize a tracking point list; None means "no reliable track".
+
+    Graceful-fallback layer for the "not enough matching points" case: points
+    that are non-finite, out of bounds, or low-confidence are dropped; if
+    nothing usable remains we return None so the renderer falls back to a
+    stable centered crop instead of emitting a broken animated expression.
+    """
+    if not track:
+        return None
+    out: list[dict] = []
+    for p in track:
+        try:
+            t = float(p["time"])
+            x = float(p["x"])
+            y = float(p["y"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not all(math.isfinite(v) for v in (t, x, y)):
+            continue
+        if not (0.0 <= t <= max(0.0, float(duration))):
+            continue
+        if not (0.0 <= x <= float(width)) or not (0.0 <= y <= float(height)):
+            continue
+        conf = float(p.get("confidence", 1.0))
+        if conf < min_conf:
+            continue
+        out.append(
+            {
+                "time": t,
+                "x": x,
+                "y": y,
+                "confidence": conf,
+                "track_id": p.get("track_id", 0),
+            }
+        )
+    if not out:
+        return None
+    out.sort(key=lambda q: q["time"])
+    dedup: list[dict] = []
+    for q in out:
+        if dedup and abs(q["time"] - dedup[-1]["time"]) < 1e-6:
+            dedup[-1] = q
+        else:
+            dedup.append(q)
+    return dedup
+
+
+def _tracked_crop_filter(
+    width: int, height: int, track: list[dict] | None
+) -> tuple[str, int, int]:
+    """Build a safe 9:16 crop filter for the source geometry.
+
+    Returns (crop_filter_str, crop_width, crop_height). The crop rectangle is
+    always kept fully inside the source frame. When track is None the crop is
+    the stable centered 9:16 window; otherwise the crop rectangle follows the
+    tracked point through piecewise-linear keyframes (clamped before the first
+    and after the last keyframe so we never extrapolate).
+    """
+    target = 9 / 16
+    if width / height >= target:
+        cw_f = height * target
+        ch_f = height
     else:
-        cw_f=width
-        ch_f=width/target
-
-    cw=max(2,min(width,int(round(cw_f))))
-    ch=max(2,min(height,int(round(ch_f))))
-    if cw < width and cw % 2: cw-=1
-    if ch < height and ch % 2: ch-=1
-    max_x=max(0,width-cw)
-    max_y=max(0,height-ch)
+        cw_f = width
+        ch_f = width / target
+    cw = max(2, min(width, int(round(cw_f))))
+    ch = max(2, min(height, int(round(ch_f))))
+    if cw < width and cw % 2 == 1:
+        cw -= 1
+    if ch < height and ch % 2 == 1:
+        ch -= 1
+    max_x = max(0, width - cw)
+    max_y = max(0, height - ch)
 
     if not track:
-        x=max_x/2
-        y=max_y/2
-        return f"crop={cw}:{ch}:{int(round(x))}:{int(round(y))},scale=1080:1920:flags=lanczos,setsar=1"
+        return f"crop={cw}:{ch}:{max_x // 2}:{max_y // 2}", cw, ch
 
-    pts=sorted(track,key=lambda p:float(p["time"]))
-
-    def expr(axis,limit,crop_size):
-        vals=[]
-        for p in pts:
-            try:
-                t=float(p["time"])
-                center=float(p[axis])
-            except (KeyError,TypeError,ValueError):
+    def expr(axis: str, limit: int, crop_size: int) -> str:
+        vals: list[tuple[float, float]] = []
+        for p in track:
+            t = float(p["time"])
+            center = float(p[axis])
+            raw = center - crop_size / 2  # center -> top-left corner
+            start = max(0.0, min(float(limit), raw))
+            vals.append((t, start))
+        if len(vals) == 1:
+            v = vals[0][1]
+            return _escape_expr(f"clip({v:.3f},0,{float(limit):.3f})")
+        e = f"clip({vals[-1][1]:.3f},0,{float(limit):.3f})"
+        for i in range(len(vals) - 1, 0, -1):
+            t0, v0 = vals[i - 1]
+            t1, v1 = vals[i]
+            dt = t1 - t0
+            if dt <= 0:
                 continue
-            if not all(map(lambda v: v==v and abs(v)<1e12,(t,center))):
-                continue
-            raw=center-crop_size/2
-            start=max(0.0,min(float(limit),raw))
-            vals.append((t,start))
-
-        if not vals:
-            return str(float(limit)/2)
-
-        clean=[]
-        for t,v in vals:
-            if clean and abs(t-clean[-1][0])<1e-6:
-                clean[-1]=(t,v)
-            else:
-                clean.append((t,v))
-        vals=clean
-
-        e=f"clip({vals[-1][1]:.3f},0,{float(limit):.3f})"
-        if len(vals)==1:
-            return _escape_expr(e)
-
-        for i in range(len(vals)-1,0,-1):
-            t0,v0=vals[i-1]
-            t1,v1=vals[i]
-            dt=t1-t0
-            if dt<=0:
-                continue
-            interp=f"clip({v0:.3f}+({v1-v0:.3f})*(t-{t0:.6f})/{dt:.6f},0,{float(limit):.3f})"
-            e=f"if(lt(t,{t1:.6f}),{interp},{e})"
+            interp = f"clip({v0:.3f}+({v1 - v0:.3f})*(t-{t0:.6f})/{dt:.6f},0,{float(limit):.3f})"
+            e = f"if(lt(t,{t1:.6f}),{interp},{e})"
+        # Clamp before the first keyframe: segments may start before
+        # tracking data becomes available.
+        t0, v0 = vals[0]
+        e = f"if(lte(t,{t0:.6f}),clip({v0:.3f},0,{float(limit):.3f}),{e})"
         return _escape_expr(e)
 
-    x_expr=expr("x",max_x,cw)
-    y_expr=expr("y",max_y,ch)
-    return f"crop={cw}:{ch}:{x_expr}:{y_expr},scale=1080:1920:flags=lanczos,setsar=1"
+    x_expr = expr("x", max_x, cw)
+    y_expr = expr("y", max_y, ch)
+    return f"crop={cw}:{ch}:{x_expr}:{y_expr}", cw, ch
 
-def render_vertical(source:str,output:str,start:float=0,end:float|None=None,zoom:float=1.0,subtitle_file:str|None=None,track:list[dict]|None=None)->None:
-    info=ffprobe(source)
-    z=max(1.0,min(float(zoom),1.14))
-    vf=_tracked_crop_filter(info.width,info.height,track)
-    if z!=1.0:
-        vf+=f",scale=trunc(iw*{z}/2)*2:trunc(ih*{z}/2)*2,crop=1080:1920"
-    if subtitle_file: vf+=f",subtitles={_escape_filter_path(subtitle_file)}"
-    cmd=["ffmpeg","-y","-ss",str(start),"-i",source]
-    if end is not None: cmd+=["-t",str(max(0,end-start))]
-    cmd+=["-vf",vf,"-r","30","-pix_fmt","yuv420p","-c:v","libx264","-preset","medium","-crf","20","-c:a","aac","-b:a","160k","-movflags","+faststart",output]
-    subprocess.run(cmd,check=True)
 
-def render_plan(source:str,output:str,segments:list[dict],subtitle_file:str|None=None,track:list[dict]|None=None)->None:
-    if not segments: raise ValueError("No segments to render")
-    work=Path(tempfile.mkdtemp(prefix="shortforge-render-")); parts=[]
+def _fit_filtergraph(width: int, height: int, zoom: float = 1.0) -> str:
+    """Complex filtergraph that normalizes wide footage into 9:16.
+
+    The full frame is contain-fitted inside the 1080x1920 canvas
+    (force_original_aspect_ratio=decrease) and centered over a blurred,
+    cover-scaled copy of itself, so landscape/square sources keep their
+    whole composition instead of being cover-cropped into an over-zoomed
+    sliver. An optional zoom is a gentle centered punch-in on the sharp
+    foreground only; the blurred background stays stable.
+    """
+    z = max(1.0, min(float(zoom or 1.0), 1.14))
+    fg = "[fg]scale=1080:1920:force_original_aspect_ratio=decrease:force_divisible_by=2"
+    if z > 1.0001:
+        fg += f",scale=trunc(iw*{z:.4f}/2)*2:trunc(ih*{z:.4f}/2)*2:flags=lanczos"
+    fg += ",setsar=1[fgs]"
+    return (
+        "[0:v]split=2[bg][fg];"
+        "[bg]scale=270:480:force_original_aspect_ratio=increase:force_divisible_by=2,"
+        "crop=270:480,gblur=sigma=6,scale=1080:1920:flags=bilinear,setsar=1[bgb];"
+        f"{fg};"
+        "[bgb][fgs]overlay=(W-w)/2:(H-h)/2,setsar=1[vout]"
+    )
+
+
+def _build_vertical_filter(
+    width: int,
+    height: int,
+    track: list[dict] | None,
+    zoom: float = 1.0,
+    subtitle_file: str | None = None,
+) -> tuple[str, bool]:
+    """Filtergraph for one normalized 9:16 segment.
+
+    Returns (filtergraph, is_complex). Two geometry modes:
+
+    * Portrait-ish sources (w/h <= FIT_MAX_SOURCE_AR): single-chain `-vf`
+      graph — 9:16 tracked crop -> optional centered zoom -> scale canvas ->
+      setsar=1 (always LAST so rounding inside scale never reintroduces a
+      non-1:1 sample aspect ratio). Upscaling here is plain output-size
+      normalization, not an extra framing zoom.
+
+    * Wider sources (3:4, 4:5, 1:1, 16:9 ...): complex graph from
+      `_fit_filtergraph` — the whole frame is contain-fitted and centered on
+      a blurred fill, avoiding the destructive cover-crop that made rendered
+      shorts look hugely zoomed-in ("too big for screen").
+
+    Optional subtitles (the ASS canvas is already 1080x1920) are appended to
+    the final chain in both modes.
+    """
+    if width / height > FIT_MAX_SOURCE_AR:
+        graph = _fit_filtergraph(width, height, zoom)
+        if subtitle_file:
+            suffix = f",subtitles={_escaped_filter_path(subtitle_file)}"
+            graph = graph[: -len("[vout]")] + suffix + "[vout]"
+        return graph, True
+
+    crop_vf, cw, ch = _tracked_crop_filter(width, height, track)
+    filters = [crop_vf]
+    z = max(1.0, min(float(zoom or 1.0), 1.14))
+    if z > 1.0001:
+        filters.append(
+            f"scale=trunc({cw}*{z:.4f}/2)*2:trunc({ch}*{z:.4f}/2)*2:flags=lanczos,"
+            f"crop={cw}:{ch}"
+        )
+    filters.append(f"scale={OUT_W}:{OUT_H}:flags=lanczos")
+    filters.append("setsar=1")
+    vf = ",".join(filters)
+    if subtitle_file:
+        vf += f",subtitles={_escaped_filter_path(subtitle_file)}"
+    return vf, False
+
+
+def render_vertical(
+    source: str,
+    output: str,
+    start: float = 0,
+    end: float | None = None,
+    zoom: float = 1.0,
+    subtitle_file: str | None = None,
+    track: list[dict] | None = None,
+) -> None:
+    """Render one segment of the source to a normalized 1080x1920 vertical clip."""
+    info = ffprobe(source)
+    t = (
+        _sanitize_track(track, info.width, info.height, info.duration)
+        if track
+        else None
+    )
+    sub_name = None
+    sub_cwd = None
+    if subtitle_file:
+        # Reference the ASS by relative name and run ffmpeg from its folder:
+        # an absolute Windows path inside the subtitles filter option is not
+        # reliably parseable across FFmpeg builds (see _run docstring).
+        sub_abs = Path(subtitle_file).resolve()
+        sub_name = sub_abs.name
+        sub_cwd = str(sub_abs.parent)
+    vf, is_complex = _build_vertical_filter(info.width, info.height, t, zoom, sub_name)
+    cmd = ["ffmpeg", "-y", "-ss", f"{start:.6f}", "-i", source]
+    if end is not None:
+        cmd += ["-t", f"{max(0.0, end - start):.6f}"]
+    if is_complex:
+        # Blur-pad fit mode: multi-chain graph -> map its output label; keep
+        # source audio when present ("?" makes the audio map optional).
+        cmd += ["-filter_complex", vf, "-map", "[vout]", "-map", "0:a?"]
+    else:
+        cmd += ["-vf", vf]
+    cmd += [
+        "-r",
+        str(OUT_FPS),
+        "-pix_fmt",
+        "yuv420p",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "medium",
+        "-crf",
+        "20",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "160k",
+        "-movflags",
+        "+faststart",
+        output,
+    ]
+    _run(cmd, cwd=sub_cwd)
+
+
+def _concat_quote(posix_path: str) -> str:
+    """One entry for the concat demuxer file list (names are our own temp files)."""
+    return f"file '{posix_path}'"
+
+
+def render_plan(
+    source: str,
+    output: str,
+    segments: list[dict],
+    subtitle_file: str | None = None,
+    track: list[dict] | None = None,
+) -> None:
+    """Render consecutive segments of `source` into a single vertical MP4.
+
+    Each segment is rendered exactly once (decoded from source and encoded to
+    its final form), then the parts are concatenated with stream copy, so no
+    content is re-encoded repeatedly. Temporary files are cleaned up even when
+    FFmpeg fails, and any FFmpeg error escapes as a RenderError with the log.
+    """
+    if not segments:
+        raise ValueError("No segments to render")
+    out = Path(output)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    work = Path(tempfile.mkdtemp(prefix="shortforge-render-"))
+    parts: list[Path] = []
     try:
-        for i,s in enumerate(segments):
-            part=work/f"part-{i:04d}.mp4"
-            st=float(s["start"]); en=float(s["end"])
-            local=[dict(p,time=float(p["time"])-st) for p in (track or []) if st<=float(p["time"])<=en]
-            render_vertical(source,str(part),st,en,float(s.get("zoom",1.0)),subtitle_file,local)
+        ffprobe(source)  # fail fast with a useful RenderError (missing source)
+        for i, s in enumerate(segments):
+            try:
+                st = float(s["start"])
+                en = float(s["end"])
+            except (KeyError, TypeError, ValueError):
+                raise ValueError(f"segment {i + 1} is missing valid start/end")
+            if en <= st:
+                continue
+            part = work / f"part-{i:04d}.mp4"
+            local = None
+            if track:
+                local = []
+                for p in track:
+                    try:
+                        t = float(p["time"])
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    if st <= t <= en:
+                        q = dict(p)
+                        q["time"] = round(t - st, 6)
+                        local.append(q)
+            try:
+                z = float(s.get("zoom", 1.0) or 1.0)
+            except (TypeError, ValueError):
+                z = 1.0
+            render_vertical(source, str(part), st, en, z, subtitle_file, local)
             parts.append(part)
-        concat=work/"concat.txt"
-        concat.write_text("\n".join(f"file '{p.as_posix()}'" for p in parts),encoding="utf-8")
-        subprocess.run(["ffmpeg","-y","-f","concat","-safe","0","-i",str(concat),"-c","copy","-movflags","+faststart",output],check=True)
+        if not parts:
+            raise ValueError("No renderable segments after validation")
+        if len(parts) == 1:
+            shutil.copy2(parts[0], out)
+            return
+        concat = work / "concat.txt"
+        concat.write_text(
+            "\n".join(_concat_quote(p.as_posix()) for p in parts), encoding="utf-8"
+        )
+        _run(
+            [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                str(concat),
+                "-c",
+                "copy",
+                "-movflags",
+                "+faststart",
+                str(out),
+            ]
+        )
     finally:
-        shutil.rmtree(work,ignore_errors=True)
+        shutil.rmtree(work, ignore_errors=True)
+
 
 def transition_filter(kind: str, duration: float = 0.18) -> str:
     d = max(0.08, min(0.5, float(duration)))
@@ -136,7 +439,10 @@ def transition_filter(kind: str, duration: float = 0.18) -> str:
         return "scale=1120:1992:flags=lanczos,crop=1080:1920"
     return "null"
 
-def apply_transition_metadata(segments: list[dict], beats: list[float] | None = None) -> list[dict]:
+
+def apply_transition_metadata(
+    segments: list[dict], beats: list[float] | None = None
+) -> list[dict]:
     beats = beats or []
     result = []
     for i, segment in enumerate(segments):
