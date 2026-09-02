@@ -39,7 +39,7 @@ def analyze(req:AnalyzeRequest):
     active=build_highlight_windows(req.duration,silences)
     captions=make_caption_groups([CaptionWord(w["text"],float(w["start"]),float(w["end"])) for w in words])
     reframe=build_reframe_track(req.width,req.height,req.duration,tracking or None)
-    plan=build_plan(req.duration,req.preset,active or None,scenes,words)
+    plan=build_plan(req.duration,req.preset,active or None,scenes,words,beats)
     return {"project":req.model_dump(),"analysis":{"silences":[s.__dict__ for s in silences],"scenes":scenes,"transcript_words":words,"tracking":tracking,"beats":beats},"captions":captions,"segments":plan["segments"],"reframe":reframe,"status":"ready"}
 
 class RenderPlanRequest(BaseModel):
