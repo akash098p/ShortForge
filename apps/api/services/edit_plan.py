@@ -1,13 +1,31 @@
-def build_plan(duration: float, preset: str, active_windows: list[dict]|None=None) -> dict:
-    if duration <= 0: return {"segments":[]}
-    max_clip={"viral":8.0,"podcast":18.0,"cinematic":14.0,"energy":5.0}.get(preset,8.0)
-    source=active_windows or [{"start":0.0,"end":duration}]
+def _merge_windows(windows:list[dict],gap:float=0.12)->list[dict]:
+    if not windows:return []
+    items=sorted(windows,key=lambda x:x["start"]); out=[dict(items[0])]
+    for w in items[1:]:
+        if w["start"]-out[-1]["end"]<=gap: out[-1]["end"]=max(out[-1]["end"],w["end"])
+        else: out.append(dict(w))
+    return out
+
+def build_plan(duration:float,preset:str,active_windows:list[dict]|None=None,scene_cuts:list[float]|None=None,words:list[dict]|None=None)->dict:
+    if duration<=0:return {"segments":[]}
+    limits={"viral":(2.0,7.0),"podcast":(4.0,16.0),"cinematic":(3.0,12.0),"energy":(1.5,5.0)}
+    min_clip,max_clip=limits.get(preset,limits["viral"])
+    source=_merge_windows(active_windows or [{"start":0.0,"end":duration}])
+    cuts=sorted(set([0.0,duration]+[float(x) for x in (scene_cuts or []) if 0<float(x)<duration]))
     segments=[]; index=0
-    for window in source:
-        cursor=float(window["start"]); end_limit=float(window["end"])
-        while cursor<end_limit:
-            end=min(end_limit,cursor+max_clip)
-            zoom=1.06 if preset in {"viral","energy"} and index%2==0 else 1.0
-            segments.append({"id":f"segment-{index+1}","start":round(cursor,3),"end":round(end,3),"zoom":zoom,"reason":"speech-active pacing"})
-            cursor=end; index+=1
+    for w in source:
+        cursor=float(w["start"]); end_limit=float(w["end"])
+        while cursor<end_limit-0.05:
+            target=min(end_limit,cursor+max_clip)
+            candidates=[c for c in cuts if cursor+min_clip<=c<=target+0.15]
+            end=min(candidates,key=lambda c:abs(c-target)) if candidates else target
+            if end-cursor<min_clip and target<end_limit:
+                end=min(end_limit,target)
+            if end-cursor>=0.5:
+                nearby_words=[x for x in (words or []) if float(x.get("start",0))<end and float(x.get("end",0))>cursor]
+                speech_density=min(1.0,len(nearby_words)/max(1.0,(end-cursor)*3.0))
+                zoom=1.06 if preset in {"viral","energy"} and index%3==0 else 1.0
+                segments.append({"id":f"segment-{index+1}","start":round(cursor,3),"end":round(end,3),"zoom":zoom,"speech_density":round(speech_density,3),"reason":"silence-aware, scene-aware pacing"})
+                index+=1
+            cursor=end
     return {"segments":segments}
