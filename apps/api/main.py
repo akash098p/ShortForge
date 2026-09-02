@@ -5,6 +5,7 @@ from services.analyzer import detect_silences, detect_scenes, build_highlight_wi
 from services.transcription import transcribe
 from services.captions import CaptionWord, make_caption_groups
 from services.subtitles import to_ass
+from services.reframe import build_reframe_track
 from pathlib import Path
 import uuid
 
@@ -52,6 +53,7 @@ def analyze(req: AnalyzeRequest):
         },
         "captions": captions,
         "segments": plan["segments"],
+        "reframe": build_reframe_track(req.width, req.height, req.duration),
         "status": "ready",
     }
 
