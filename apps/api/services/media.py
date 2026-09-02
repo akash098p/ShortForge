@@ -20,30 +20,82 @@ def _escape_filter_path(path:str)->str:
     return path.replace("\\","/").replace(":","\\:")
 
 def _tracked_crop_filter(width:int,height:int,track:list[dict]|None,fps:float=30.0)->str:
+    """Build a safe 9:16 crop filter with optional tracked center movement.
+
+    The crop rectangle is always kept inside the source frame. This is
+    especially important for portrait sources where the crop width equals
+    the input width, so x must remain exactly zero.
+    """
     target=9/16
     if width/height>=target:
-        cw=height*target; ch=height
+        cw_f=height*target
+        ch_f=height
     else:
-        cw=width; ch=width/target
+        cw_f=width
+        ch_f=width/target
+
+    # Crop dimensions must be valid integer pixel dimensions for the source.
+    cw=max(2,min(width,int(round(cw_f))))
+    ch=max(2,min(height,int(round(ch_f))))
+    # Keep dimensions even for yuv420p where practical.
+    if cw < width and cw % 2: cw-=1
+    if ch < height and ch % 2: ch-=1
+    max_x=max(0,width-cw)
+    max_y=max(0,height-ch)
+
     if not track:
-        x=(width-cw)/2; y=(height-ch)/2
-        return f"crop={int(cw)}:{int(ch)}:{int(x)}:{int(y)},scale=1080:1920:flags=lanczos,setsar=1"
-    # FFmpeg evaluates x/y per frame. Interpolate between tracked points and clamp to valid bounds.
+        x=max_x/2
+        y=max_y/2
+        return f"crop={cw}:{ch}:{int(round(x))}:{int(round(y))},scale=1080:1920:flags=lanczos,setsar=1"
+
     pts=sorted(track,key=lambda p:float(p["time"]))
-    def expr(axis,limit):
+
+    def expr(axis,limit,crop_size):
         vals=[]
         for p in pts:
-            t=float(p["time"]); center=float(p[axis])
-            start=max(0,min(limit,center-(cw if axis=="x" else ch)/2))
+            try:
+                t=float(p["time"])
+                center=float(p[axis])
+            except (KeyError,TypeError,ValueError):
+                continue
+            if not all(map(lambda v: v==v and abs(v)<1e12,(t,center))):
+                continue
+            # Track values are centers; convert to top-left crop coordinates.
+            raw=center-crop_size/2
+            start=max(0.0,min(float(limit),raw))
             vals.append((t,start))
-        if len(vals)==1:return str(vals[0][1])
-        e=str(vals[-1][1])
+
+        if not vals:
+            return str(float(limit)/2)
+
+        # De-duplicate timestamps so the generated expression stays valid.
+        clean=[]
+        for t,v in vals:
+            if clean and abs(t-clean[-1][0])<1e-6:
+                clean[-1]=(t,v)
+            else:
+                clean.append((t,v))
+        vals=clean
+
+        e=f"clip({vals[-1][1]:.3f},0,{float(limit):.3f})"
+        if len(vals)==1:
+            return e
+
         for i in range(len(vals)-1,0,-1):
-            t0,v0=vals[i-1]; t1,v1=vals[i]
-            if t1<=t0: continue
-            e=f"if(lt(t,{t1:.6f}),{v0:.3f}+({v1-v0:.3f})*(t-{t0:.6f})/{t1-t0:.6f},{e})"
+            t0,v0=vals[i-1]
+            t1,v1=vals[i]
+            dt=t1-t0
+            if dt<=0:
+                continue
+            # clip the interpolated value as a final safety net against
+            # malformed/stale tracker coordinates.
+            interp=f"clip({v0:.3f}+({v1-v0:.3f})*(t-{t0:.6f})/{dt:.6f},0,{float(limit):.3f})"
+            e=f"if(lt(t,{t1:.6f}),{interp},{e})"
         return e
-    return f"crop={int(cw)}:{int(ch)}:{expr('x',width-cw)}:{expr('y',height-ch)},scale=1080:1920:flags=lanczos,setsar=1"
+
+    x_expr=expr("x",max_x,cw)
+    y_expr=expr("y",max_y,ch)
+    return f"crop={cw}:{ch}:{x_expr}:{y_expr},scale=1080:1920:flags=lanczos,setsar=1"
 
 def render_vertical(source:str,output:str,start:float=0,end:float|None=None,zoom:float=1.0,subtitle_file:str|None=None,track:list[dict]|None=None)->None:
     info=ffprobe(source)
