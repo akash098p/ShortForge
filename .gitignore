@@ -9,6 +9,11 @@ out
 dist
 build
 
+# ShortForge runtime artifacts
+apps/api/shortforge-uploads/
+apps/api/shortforge-render/
+*.pt
+
 # Python
 __pycache__
 *.py[cod]
