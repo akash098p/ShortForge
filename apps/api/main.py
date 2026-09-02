@@ -56,7 +56,7 @@ def render_plan_endpoint(req:RenderPlanRequest):
             subtitle_path=Path("/tmp/shortforge-render")/f"{uuid.uuid4().hex}.ass"
             subtitle_path.parent.mkdir(parents=True,exist_ok=True)
             to_ass(req.captions,str(subtitle_path)); subtitle=str(subtitle_path)
-        render_plan(req.source_path,req.output_path,req.segments,subtitle)
+        render_plan(req.source_path,req.output_path,req.segments,subtitle,req.reframe)
         if subtitle_path: subtitle_path.unlink(missing_ok=True)
         return {"status":"complete","output_path":req.output_path,"captions_burned":bool(req.captions)}
     except Exception as e:
