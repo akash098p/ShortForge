@@ -88,6 +88,6 @@ def render_plan_endpoint(req:RenderPlanRequest):
         output.parent.mkdir(parents=True,exist_ok=True)
         render_plan(req.source_path,str(output),req.segments,str(subtitle_path) if subtitle_path else None,req.reframe)
         if subtitle_path: subtitle_path.unlink(missing_ok=True)
-        return {"status":"complete","output_path":str(output),"size_bytes":os.path.getsize(output),"captions_burned":bool(req.captions)}
+        return {"status":"complete","output_path":str(output),"preview_url":f"/outputs/{output.name}","size_bytes":os.path.getsize(output),"captions_burned":bool(req.captions)}
     except Exception as e:
         raise HTTPException(status_code=400,detail=str(e))
