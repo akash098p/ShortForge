@@ -72,3 +72,30 @@ def render_plan(source:str,output:str,segments:list[dict],subtitle_file:str|None
         subprocess.run(["ffmpeg","-y","-f","concat","-safe","0","-i",str(concat),"-c","copy","-movflags","+faststart",output],check=True)
     finally:
         shutil.rmtree(work,ignore_errors=True)
+
+def transition_filter(kind: str, duration: float = 0.18) -> str:
+    d = max(0.08, min(0.5, float(duration)))
+    if kind == "fade":
+        return f"fade=t=in:st=0:d={d}"
+    if kind == "flash":
+        return "eq=brightness=0.04"
+    if kind == "zoom":
+        return "scale=1120:1992:flags=lanczos,crop=1080:1920"
+    return "null"
+
+def apply_transition_metadata(segments: list[dict], beats: list[float] | None = None) -> list[dict]:
+    beats = beats or []
+    result = []
+    for i, segment in enumerate(segments):
+        item = dict(segment)
+        if i == 0:
+            item["transition"] = "none"
+        elif item.get("beat_sync"):
+            item["transition"] = "zoom" if i % 2 == 0 else "flash"
+        elif float(item.get("speech_density", 0)) < 0.35:
+            item["transition"] = "fade"
+        else:
+            item["transition"] = "cut"
+        item["transition_duration"] = 0.16 if item["transition"] != "cut" else 0.0
+        result.append(item)
+    return result
