@@ -27,7 +27,7 @@ def _tracked_crop_filter(width:int,height:int,track:list[dict]|None,fps:float=30
         cw=width; ch=width/target
     if not track:
         x=(width-cw)/2; y=(height-ch)/2
-        return f"crop={int(cw)}:{int(ch)}:{int(x)}:{int(y)},scale=1080:1920:flags=lanczos"
+        return f"crop={int(cw)}:{int(ch)}:{int(x)}:{int(y)},scale=1080:1920:flags=lanczos,setsar=1"
     # FFmpeg evaluates x/y per frame. Interpolate between tracked points and clamp to valid bounds.
     pts=sorted(track,key=lambda p:float(p["time"]))
     def expr(axis,limit):
@@ -43,7 +43,7 @@ def _tracked_crop_filter(width:int,height:int,track:list[dict]|None,fps:float=30
             if t1<=t0: continue
             e=f"if(lt(t,{t1:.6f}),{v0:.3f}+({v1-v0:.3f})*(t-{t0:.6f})/{t1-t0:.6f},{e})"
         return e
-    return f"crop={int(cw)}:{int(ch)}:{expr('x',width-cw)}:{expr('y',height-ch)},scale=1080:1920:flags=lanczos"
+    return f"crop={int(cw)}:{int(ch)}:{expr('x',width-cw)}:{expr('y',height-ch)},scale=1080:1920:flags=lanczos,setsar=1"
 
 def render_vertical(source:str,output:str,start:float=0,end:float|None=None,zoom:float=1.0,subtitle_file:str|None=None,track:list[dict]|None=None)->None:
     info=ffprobe(source)
@@ -54,7 +54,7 @@ def render_vertical(source:str,output:str,start:float=0,end:float|None=None,zoom
     if subtitle_file: vf+=f",subtitles={_escape_filter_path(subtitle_file)}"
     cmd=["ffmpeg","-y","-ss",str(start),"-i",source]
     if end is not None: cmd+=["-t",str(max(0,end-start))]
-    cmd+=["-vf",vf,"-r","30","-pix_fmt","yuv420p","-c:v","libx264","-preset","medium","-crf","18","-c:a","aac","-b:a","192k","-movflags","+faststart",output]
+    cmd+=["-vf",vf,"-r","30","-pix_fmt","yuv420p","-c:v","libx264","-preset","medium","-crf","20","-c:a","aac","-b:a","160k","-movflags","+faststart",output]
     subprocess.run(cmd,check=True)
 
 def render_plan(source:str,output:str,segments:list[dict],subtitle_file:str|None=None,track:list[dict]|None=None)->None:
