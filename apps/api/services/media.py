@@ -10,6 +10,18 @@ OUT_FPS = 30
 # square footage is never blown up into a narrow, over-zoomed sliver.
 FIT_MAX_SOURCE_AR = 0.70
 
+# Single-pass encoding target shared by every renderer (video quality rules:
+# one transformation pipeline, H.264 1080x1920 @30fps, CRF ~20, faststart).
+ENCODER_ARGS = [
+    "-pix_fmt", "yuv420p",
+    "-c:v", "libx264",
+    "-preset", "medium",
+    "-crf", "20",
+    "-c:a", "aac",
+    "-b:a", "160k",
+    "-movflags", "+faststart",
+]
+
 
 @dataclass
 class MediaInfo:
@@ -70,8 +82,13 @@ def ffprobe(path: str) -> MediaInfo:
     stream = next(s for s in data["streams"] if "width" in s)
     n, d = stream.get("r_frame_rate", "30/1").split("/")
     fps = float(n) / float(d) if float(d) != 0 else float(OUT_FPS)
+    raw_dur = (data.get("format") or {}).get("duration")
+    try:
+        duration = float(raw_dur) if raw_dur else 0.0
+    except (TypeError, ValueError):
+        duration = 0.0  # still images report no duration
     return MediaInfo(
-        float(data["format"]["duration"]),
+        duration,
         int(stream["width"]),
         int(stream["height"]),
         fps,
@@ -323,25 +340,7 @@ def render_vertical(
         cmd += ["-filter_complex", vf, "-map", "[vout]", "-map", "0:a?"]
     else:
         cmd += ["-vf", vf]
-    cmd += [
-        "-r",
-        str(OUT_FPS),
-        "-pix_fmt",
-        "yuv420p",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "medium",
-        "-crf",
-        "20",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "160k",
-        "-movflags",
-        "+faststart",
-        output,
-    ]
+    cmd += ["-r", str(OUT_FPS), *ENCODER_ARGS, output]
     _run(cmd, cwd=sub_cwd)
 
 
