@@ -327,3 +327,90 @@ h2 {
   object-fit: contain;
   box-shadow: 0 25px 80px #000;
 }
+
+/* Asset mapping: uploaded photos/videos -> reference segments */
+.asset-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 18px 0 6px;
+}
+.asset-chip {
+  position: relative;
+  width: 72px;
+  height: 96px;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: #111;
+}
+.asset-chip img,
+.asset-chip video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.asset-chip small {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: rgba(0, 0, 0, 0.55);
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+.mapping {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 10px;
+  margin: 14px 0 8px;
+}
+.map-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 13px;
+}
+.map-row select {
+  background: #141418;
+  color: #eee;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 8px;
+  padding: 6px 8px;
+  max-width: 170px;
+}
+.role-chip {
+  font-style: normal;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #7ae2b8;
+  border: 1px solid rgba(122, 226, 184, 0.35);
+  border-radius: 999px;
+  padding: 1px 7px;
+  margin-left: 8px;
+  white-space: nowrap;
+}
+.role-chip.scene {
+  color: #8ec5ff;
+  border-color: rgba(142, 197, 255, 0.35);
+}
+.trans-select {
+  margin-left: 8px;
+  background: #141418;
+  color: #ffd166;
+  border: 1px solid rgba(255, 209, 102, 0.35);
+  border-radius: 999px;
+  padding: 2px 6px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
