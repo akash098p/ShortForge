@@ -9,9 +9,18 @@ import {
   SlidersHorizontal,
   CheckCircle2,
   Loader2,
+  ImagePlus,
 } from "lucide-react";
 import { readVideoMetadata, makeSmartCrop } from "./lib/video";
-import { createEditPlan, uploadVideo, renderEditPlan } from "./lib/api";
+import {
+  createEditPlan,
+  uploadVideo,
+  renderEditPlan,
+  uploadAssets,
+  renderRecreation,
+  type UploadedAsset,
+  API_BASE,
+} from "./lib/api";
 type Preset = { id: string; name: string; desc: string; icon: any };
 const presets: Preset[] = [
   {
@@ -51,6 +60,13 @@ export default function Home() {
   const [drag, setDrag] = useState(false);
   const [plan, setPlan] = useState<any>(null);
   const [rendered, setRendered] = useState<string | null>(null);
+  const assetInput = useRef<HTMLInputElement>(null);
+  const [userAssets, setUserAssets] = useState<UploadedAsset[]>([]);
+  const [mapping, setMapping] = useState<Record<string, string>>({});
+  const [assetBusy, setAssetBusy] = useState(false);
+  const [recreating, setRecreating] = useState(false);
+  const [recreation, setRecreation] = useState<string | null>(null);
+  const [transOverrides, setTransOverrides] = useState<Record<string, string>>({});
   const onFile = async (f?: File) => {
     if (!f?.type.startsWith("video/")) return;
     setFile(f);
@@ -106,6 +122,51 @@ export default function Home() {
     } catch (e) {
       setStatus("error");
       setError(e instanceof Error ? e.message : "Render failed");
+    }
+  };
+  const onAssetFiles = async (files?: FileList | null) => {
+    if (!files?.length) return;
+    setAssetBusy(true);
+    setError(null);
+    try {
+      const res = await uploadAssets(Array.from(files));
+      const saved = res.assets.map((a) => ({ ...a, url: API_BASE + a.url }));
+      setUserAssets((prev) => [...prev, ...saved]);
+      // Auto-map: spread the assets across the analyzed segments in order,
+      // keeping any mapping the user already chose manually.
+      const segs: any[] = plan?.segments || [];
+      setMapping((prev) => {
+        const next = { ...prev };
+        let k = 0;
+        for (const s of segs) {
+          if (!next[s.id]) next[s.id] = saved[k++ % saved.length].id;
+        }
+        return next;
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Asset upload failed");
+    } finally {
+      setAssetBusy(false);
+    }
+  };
+  const recreateShort = async () => {
+    if (!plan || !userAssets.length) return;
+    setRecreating(true);
+    setError(null);
+    try {
+      const result = await renderRecreation({
+        referencePath: sourcePath,
+        segments: (plan.segments || []).map((s: any) =>
+          transOverrides[s.id] ? { ...s, transition: transOverrides[s.id] } : s
+        ),
+        assets: userAssets,
+        mapping,
+      });
+      setRecreation(result.preview_url);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Recreation failed");
+    } finally {
+      setRecreating(false);
     }
   };
   const onDrop = (e: React.DragEvent) => {
@@ -175,6 +236,37 @@ export default function Home() {
               <Sparkles size={17} /> Render Short
             </button>
           )}
+          {status === "complete" && (
+            <button
+              className="ghost"
+              onClick={() => assetInput.current?.click()}
+              disabled={assetBusy}
+            >
+              <ImagePlus size={17} />
+              {assetBusy
+                ? "Uploading assets…"
+                : userAssets.length
+                  ? `My assets (${userAssets.length})`
+                  : "Add my photos / videos"}
+            </button>
+          )}
+          {status === "complete" && userAssets.length > 0 && (
+            <button
+              className="primary"
+              onClick={recreateShort}
+              disabled={recreating}
+            >
+              {recreating ? (
+                <>
+                  <Loader2 className="spin" size={18} /> Building your Short…
+                </>
+              ) : (
+                <>
+                  <WandSparkles size={18} /> Recreate with my assets
+                </>
+              )}
+            </button>
+          )}
           {status === "rendering" && (
             <div className="meta">Rendering your Short…</div>
           )}
@@ -192,6 +284,20 @@ export default function Home() {
               </a>
             </div>
           )}
+          {recreation && (
+            <div className="result">
+              <p className="eyebrow">RECREATION</p>
+              <h2>Your Short — recreated with my assets</h2>
+              <video src={recreation} controls autoPlay playsInline />
+              <a
+                className="secondary"
+                href={recreation}
+                download="shortforge-recreation.mp4"
+              >
+                Download
+              </a>
+            </div>
+          )}
           {error && <div className="meta">{error}</div>}
           <input
             ref={input}
@@ -199,6 +305,17 @@ export default function Home() {
             type="file"
             accept="video/*"
             onChange={(e) => onFile(e.target.files?.[0])}
+          />
+          <input
+            ref={assetInput}
+            hidden
+            type="file"
+            multiple
+            accept="image/*,video/*"
+            onChange={(e) => {
+              onAssetFiles(e.target.files);
+              e.target.value = "";
+            }}
           />
           {meta && (
             <div className="meta">
@@ -254,6 +371,66 @@ export default function Home() {
             );
           })}
         </div>
+        {plan && userAssets.length > 0 && (
+          <>
+            <div className="section-head">
+              <div>
+                <p className="eyebrow">ASSET MAPPING</p>
+                <h2>My assets → reference segments</h2>
+              </div>
+            </div>
+            <div className="asset-strip">
+              {userAssets.map((a) => (
+                <div key={a.id} className="asset-chip">
+                  {a.kind === "image" ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={a.url} alt={a.name} />
+                  ) : (
+                    <video src={a.url} muted playsInline />
+                  )}
+                  <small>{a.kind}</small>
+                </div>
+              ))}
+            </div>
+            <div className="mapping">
+              {(plan.segments || []).map((s: any, i: number) => (
+                <div key={s.id || i} className="map-row">
+                  <span>
+                    #{i + 1} · {Math.max(0, (s.end || 0) - (s.start || 0)).toFixed(1)}s
+                    {s.role === "person" && <em className="role-chip">person</em>}
+                    {s.role === "scene" && <em className="role-chip scene">scene</em>}
+                    <select
+                      className="trans-select"
+                      title="Transition into this segment"
+                      value={transOverrides[s.id] || s.transition || "cut"}
+                      onChange={(e) =>
+                        setTransOverrides((m) => ({ ...m, [s.id]: e.target.value }))
+                      }
+                    >
+                      {["cut", "fade", "zoom", "flash", "slide", "wipe", "blur"].map((t) => (
+                        <option key={t} value={t}>
+                          {t}
+                        </option>
+                      ))}
+                    </select>
+                  </span>
+                  <select
+                    value={mapping[s.id] || ""}
+                    onChange={(e) =>
+                      setMapping((m) => ({ ...m, [s.id]: e.target.value }))
+                    }
+                  >
+                    {userAssets.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
         <div className="timeline">
           <div className="timeline-top">
             <span>Timeline</span>
