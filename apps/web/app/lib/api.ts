@@ -81,19 +81,26 @@ export async function renderRecreation(input: {
   referencePath: string | null;
   segments: any[];
   assets: UploadedAsset[];
-  mapping: Record<string, string>;
+  mapping: Record<string, string> | null;
 }) {
   const filename = `recreation-${Date.now()}.mp4`;
+  const payload: Record<string, unknown> = {
+    reference_path: input.referencePath,
+    output_path: "shortforge-render/" + filename,
+    segments: input.segments,
+    assets: input.assets,
+  };
+  // null/empty mapping = "Auto" mode fallback: the backend spreads EVERY
+  // uploaded asset across the timeline (splitting long scenes to make room).
+  // A non-empty mapping is applied exactly as sent (WYSIWYG with the grid
+  // preview in the UI), including reusing the same file in several slots.
+  if (input.mapping && Object.keys(input.mapping).length > 0) {
+    payload.mapping = input.mapping;
+  }
   const r = await fetch(API_BASE + "/v1/render-recreation", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      reference_path: input.referencePath,
-      output_path: "shortforge-render/" + filename,
-      segments: input.segments,
-      assets: input.assets,
-      mapping: input.mapping,
-    }),
+    body: JSON.stringify(payload),
   });
   if (!r.ok) throw new Error(await r.text());
   const data = await r.json();
