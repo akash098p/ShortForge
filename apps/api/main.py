@@ -210,7 +210,9 @@ def analyze(req: AnalyzeRequest):
     plan = build_plan(req.duration, req.preset, active or None, scenes, words, beats)
     assets = find_broll(req.broll_dir) if req.broll_dir else []
     plan["segments"] = make_broll_plan(plan["segments"], assets)
-    plan["segments"] = apply_transition_metadata(plan["segments"], beats)
+    plan["segments"] = apply_transition_metadata(
+        plan["segments"], beats, preset=req.preset
+    )
     plan["segments"] = assign_segment_roles(plan["segments"], tracking)
     return {
         "project": req.model_dump(),
