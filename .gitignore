@@ -12,6 +12,7 @@ build
 # ShortForge runtime artifacts
 apps/api/shortforge-uploads/
 apps/api/shortforge-render/
+apps/api/shortforge-assets/
 *.pt
 
 # Python
