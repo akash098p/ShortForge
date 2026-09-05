@@ -1,5 +1,5 @@
 "use client";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Upload,
   WandSparkles,
@@ -10,6 +10,10 @@ import {
   CheckCircle2,
   Loader2,
   ImagePlus,
+  Play,
+  Pause,
+  RefreshCw,
+  Activity,
 } from "lucide-react";
 import { readVideoMetadata, makeSmartCrop } from "./lib/video";
 import {
@@ -78,6 +82,201 @@ const EFFECTS = [
   "bw",
 ];
 const MIN_SLOT_DUR = 0.4;
+
+// Scene colors used both in the scene cards and the live bit-wave timeline.
+const SCENE_COLORS = [
+  "#8ec5ff",
+  "#ffd166",
+  "#7ae2b8",
+  "#ff8fa3",
+  "#c792ea",
+  "#4dd2ff",
+];
+
+// Beat energy 0..1 at a playback time: triangular decay pulses after each
+// detected beat plus a small pre-beat "swell" so effects anticipate the hit.
+// Returns a neutral 0.6 (constant, mildly visible) when the beat wave is off
+// or there is no beat data yet.
+function beatEnergyAt(beats: number[], t: number, drive: boolean): number {
+  if (!drive || !beats.length) return 0.6;
+  let e = 0;
+  for (let i = beats.length - 1; i >= 0; i--) {
+    const d = t - beats[i];
+    if (d > 0.8) break;
+    if (d >= 0) e += Math.max(0, 1 - d * 2.6);
+    else e += Math.max(0, 0.32 * (1 + d * 4));
+  }
+  return Math.min(1, e);
+}
+
+// Live CSS simulation of the selected scene's effect, scaled by beat energy.
+// This is what makes the editing section a *live* operation: pick "shake" and
+// the monitor instantly starts shaking to the beat wave.
+function effectStyles(effect: string, e: number, frame: number) {
+  const k = Math.max(0, e);
+  switch (effect) {
+    case "shake": {
+      const x = Math.sin(frame * 0.62) * 11 * k;
+      const y = Math.cos(frame * 0.48) * 9 * k;
+      return {
+        transform: `translate3d(${x.toFixed(1)}px,${y.toFixed(1)}px,0) scale(1.05)`,
+        filter: "none",
+      };
+    }
+    case "pulse":
+      return { transform: `scale(${(1 + 0.045 * k).toFixed(4)})`, filter: "none" };
+    case "rotate": {
+      const r = Math.sin(frame * 0.19) * 2.6 * k;
+      return { transform: `rotate(${r.toFixed(2)}deg) scale(1.08)`, filter: "none" };
+    }
+    case "vignette":
+      return {
+        transform: "scale(1.02)",
+        filter: `brightness(${(1 + 0.1 * k).toFixed(3)})`,
+      };
+    case "brighten":
+      return {
+        transform: "none",
+        filter: `brightness(${(1 + 0.3 * k).toFixed(3)}) saturate(${(1 + 0.25 * k).toFixed(3)})`,
+      };
+    case "moody":
+      return {
+        transform: "none",
+        filter: `contrast(1.12) saturate(${(0.85 - 0.18 * k).toFixed(3)}) brightness(${(1 - 0.14 * k).toFixed(3)})`,
+      };
+    case "bw":
+      return {
+        transform: "none",
+        filter: `grayscale(1) contrast(${(1.1 + 0.18 * k).toFixed(3)})`,
+      };
+    default:
+      return { transform: "none", filter: "none" };
+  }
+}
+
+function fmtTime(t: number) {
+  const s = Math.max(0, t);
+  const m = Math.floor(s / 60);
+  const sec = s - m * 60;
+  return `${m}:${sec.toFixed(1).padStart(4, "0")}`;
+}
+
+type WaveDatum = {
+  beats: number[];
+  segs: any[];
+  duration: number;
+  playhead: number;
+  energy: number;
+  selectedId: string | null;
+};
+
+// Bit-wave timeline: beat ticks + radiant ripples + ambient waveform + scene
+// blocks + playhead, redrawn every animation frame while the preview plays.
+function drawTimeline(cv: HTMLCanvasElement, o: WaveDatum) {
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const W = Math.max(80, cv.clientWidth || 0);
+  const H = cv.clientHeight || 128;
+  if (Math.abs(cv.width - Math.round(W * dpr)) > 1) cv.width = Math.round(W * dpr);
+  if (Math.abs(cv.height - Math.round(H * dpr)) > 1) cv.height = Math.round(H * dpr);
+  const ctx = cv.getContext("2d");
+  if (!ctx) return;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  const dur = Math.max(o.duration, 1e-6);
+  const px = (t: number) => (Math.max(0, Math.min(dur, t)) / dur) * W;
+  // Ambient beat-wave envelope across the whole strip.
+  const COLS = Math.max(60, Math.min(260, Math.floor(W / 4)));
+  const amps = new Array(COLS).fill(0.1);
+  for (const b of o.beats) {
+    const ci = Math.floor((b / dur) * COLS);
+    if (ci >= 0 && ci < COLS) amps[ci] += 0.55;
+  }
+  // Background grid.
+  ctx.fillStyle = "rgba(255,255,255,0.035)";
+  ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = "rgba(255,255,255,0.05)";
+  ctx.lineWidth = 1;
+  const steps = Math.min(16, Math.max(1, Math.floor(dur / 0.5)));
+  for (let i = 0; i <= steps; i++) {
+    const x = Math.round(px((i / steps) * dur)) + 0.5;
+    ctx.beginPath();
+    ctx.moveTo(x, 8);
+    ctx.lineTo(x, H - 16);
+    ctx.stroke();
+  }
+  const mid = H * 0.5;
+  // Waveform bars (the "bit wave" ambient shape).
+  const barW = W / COLS;
+  for (let i = 0; i < COLS; i++) {
+    const amp = Math.min(1, amps[i]);
+    const h = 3 + amp * 46;
+    const x = i * barW + 1;
+    ctx.fillStyle = `rgba(184,255,77,${(0.22 + 0.5 * amp).toFixed(2)})`;
+    ctx.fillRect(x, mid - h / 2, Math.max(1, barW - 2), h);
+    ctx.fillStyle = `rgba(184,255,77,${(0.07 + 0.18 * amp).toFixed(2)})`;
+    ctx.fillRect(x, mid + h / 2 - 5, Math.max(1, barW - 2), 5);
+  }
+  // Beat ticks + radiant ripples near the playhead.
+  for (const b of o.beats) {
+    const x = px(b);
+    const age = o.playhead - b;
+    const hot = age >= 0 && age < 0.5 ? Math.max(0, 1 - age * 2.2) * o.energy : 0;
+    ctx.strokeStyle = `rgba(184,255,77,${(0.55 + 0.45 * hot).toFixed(2)})`;
+    ctx.lineWidth = 1.5 + hot * 1.5;
+    ctx.beginPath();
+    ctx.moveTo(x, 10);
+    ctx.lineTo(x, H * 0.74);
+    ctx.stroke();
+    if (hot > 0) {
+      ctx.strokeStyle = `rgba(184,255,77,${(0.4 * (1 - hot)).toFixed(2)})`;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(x, mid, 2 + age * 58, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+  // Scene blocks (reference plan) at the bottom.
+  const blockY = H - 15;
+  o.segs.forEach((s: any, i: number) => {
+    const x0 = px(s.start || 0);
+    const x1 = px(s.end || 0);
+    const color = SCENE_COLORS[i % SCENE_COLORS.length];
+    const sel = s.id === o.selectedId;
+    ctx.fillStyle = sel ? "rgba(184,255,77,0.22)" : color + "22";
+    ctx.strokeStyle = sel ? "#b8ff4d" : color;
+    ctx.lineWidth = sel ? 2 : 1;
+    const w = Math.max(1, x1 - x0 - 1);
+    if (typeof ctx.roundRect === "function") {
+      ctx.beginPath();
+      ctx.roundRect(x0 + 1, blockY, w, 12, 3);
+    } else {
+      ctx.beginPath();
+      ctx.rect(x0 + 1, blockY, w, 12);
+    }
+    ctx.fill();
+    ctx.stroke();
+    if (x1 - x0 > 20) {
+      ctx.fillStyle = sel ? "#b8ff4d" : "rgba(255,255,255,0.8)";
+      ctx.font = "9px Inter, ui-sans-serif, sans-serif";
+      ctx.fillText(String(i + 1), x0 + 5, blockY + 9);
+    }
+  });
+  // Playhead.
+  const ph = px(o.playhead);
+  ctx.strokeStyle = "rgba(255,255,255,0.95)";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(ph, 4);
+  ctx.lineTo(ph, H - 4);
+  ctx.stroke();
+  ctx.fillStyle = "#ffffff";
+  ctx.beginPath();
+  ctx.moveTo(ph - 5, 3);
+  ctx.lineTo(ph + 5, 3);
+  ctx.lineTo(ph, 10);
+  ctx.closePath();
+  ctx.fill();
+}
 
 // Client-side mirror of the backend auto-spread: the longest scenes are split
 // in half until there is a slot for every uploaded asset, then assets are
@@ -153,6 +352,31 @@ export default function Home() {
   const [extraScenes, setExtraScenes] = useState<
     { id: string; dur: number }[]
   >([]);
+  // Live editor refs (driven via requestAnimationFrame without re-renders).
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const monitorFxRef = useRef<HTMLDivElement | null>(null);
+  const vignetteRef = useRef<HTMLDivElement | null>(null);
+  const transOverlayRef = useRef<HTMLDivElement | null>(null);
+  const timecodeRef = useRef<HTMLSpanElement | null>(null);
+  const beatMeterRef = useRef<HTMLDivElement | null>(null);
+  const playheadRef = useRef(0);
+  const energyRef = useRef(0.6);
+  const frameRef = useRef(0);
+  // Transport / live-FX state.
+  const [playing, setPlaying] = useState(false);
+  const [loopScene, setLoopScene] = useState(false);
+  const [beatDrive, setBeatDrive] = useState(true);
+  // Latest-state mirrors read by the rAF loop (input to the live preview).
+  const latestBeats = useRef<number[]>([]);
+  const latestSeqs = useRef<any[]>([]);
+  const latestDur = useRef(0);
+  const latestSel = useRef<string | null>(null);
+  const latestEffect = useRef("none");
+  const latestTrans = useRef("cut");
+  const latestSeg = useRef<any | null>(null);
+  const loopSceneRef = useRef(false);
+  const beatDriveRef = useRef(true);
   // Live WYSIWYG timeline: manual splits -> auto-spread of every asset
   // (Auto mode) -> duration edits reflowed cumulatively so scenes stay
   // contiguous. The render call sends exactly these segments + mapping, so
@@ -322,6 +546,181 @@ export default function Home() {
     (acc: number, s: any) => acc + Math.max(0, (s.end || 0) - (s.start || 0)),
     0,
   );
+  // Beat data from the analyzer -> the live bit wave + beat-driven effects.
+  const beats: number[] = useMemo(
+    () =>
+      Array.isArray(plan?.analysis?.beats)
+        ? ((plan.analysis.beats as number[]) || []).filter(
+            (b) => typeof b === "number" && Number.isFinite(b),
+          )
+        : [],
+    [plan],
+  );
+  const timelineDur =
+    meta?.duration ||
+    (display.segs.length ? display.segs[display.segs.length - 1].end : 0);
+  // The scene bound to the monitor: the user-selected slot, or nothing (raw
+  // source clip). Selecting a slot makes its effect/transition live.
+  const previewSeg = selectedSlot
+    ? display.segs.find((s: any) => s.id === selectedSlot) ?? null
+    : null;
+  const previewEffect = previewSeg
+    ? effectSel[previewSeg.id] || previewSeg.effect || "none"
+    : "none";
+  const previewTransition = previewSeg
+    ? transOverrides[previewSeg.id] || previewSeg.transition || "cut"
+    : "cut";
+  // Keep the rAF loop reading the freshest UI state without re-renders.
+  useEffect(() => {
+    latestBeats.current = beats;
+    latestSeqs.current = display.segs;
+    latestDur.current = timelineDur;
+    latestSel.current = selectedSlot;
+    latestEffect.current = previewEffect;
+    latestTrans.current = previewTransition;
+    latestSeg.current = previewSeg;
+    loopSceneRef.current = loopScene;
+    beatDriveRef.current = beatDrive;
+  });
+  // Jump the monitor to a selected scene so its transition previews live.
+  useEffect(() => {
+    const v = videoRef.current;
+    if (v && previewSeg && typeof previewSeg.start === "number" && Number.isFinite(previewSeg.start)) {
+      v.currentTime = previewSeg.start;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSlot]);
+  // The live editor loop: one requestAnimationFrame per frame mutates the
+  // monitor + beat wave directly (no React re-renders), syncing effects and
+  // transitions to the music's beat energy at the playhead.
+  useEffect(() => {
+    let raf = 0;
+    const tick = () => {
+      raf = requestAnimationFrame(tick);
+      frameRef.current += 1;
+      const v = videoRef.current;
+      const t = v ? v.currentTime : playheadRef.current;
+      if (!Number.isFinite(t)) return;
+      playheadRef.current = t;
+      const e = beatEnergyAt(latestBeats.current, t, beatDriveRef.current);
+      energyRef.current = e;
+      // 1) Live effect simulation on the monitor video.
+      const fxEl = monitorFxRef.current;
+      if (fxEl) {
+        const st = effectStyles(latestEffect.current, e, frameRef.current);
+        fxEl.style.transform = st.transform;
+        fxEl.style.filter = st.filter;
+      }
+      const vg = vignetteRef.current;
+      if (vg) {
+        vg.style.opacity =
+          latestEffect.current === "vignette" ? String(0.25 + 0.62 * e) : "0";
+      }
+      // 2) Live transition simulation at the selected scene's boundary.
+      const ov = transOverlayRef.current;
+      if (ov) {
+        const seg = latestSeg.current;
+        const moving = !v || !v.paused;
+        let vis = false;
+        if (seg && moving) {
+          const tr = latestTrans.current;
+          const segDur = Math.max(0.35, (seg.end || 0) - (seg.start || 0) || 0.35);
+          const td = Math.min(0.22, 0.4 * segDur);
+          const local = t - (seg.start || 0);
+          if (tr !== "cut" && tr !== "none" && local >= 0 && local <= td) {
+            const p = local / td;
+            const k = Math.max(0, 1 - p);
+            vis = true;
+            ov.style.transform = "none";
+            if (tr.includes("slide") || tr.includes("wipe")) {
+              const outRight = tr.endsWith("right") || tr.endsWith("up");
+              ov.style.background = "rgba(8,8,10,0.94)";
+              ov.style.backdropFilter = "none";
+              ov.style.transform = `translateX(${
+                outRight ? 100 - k * 100 : -100 + k * 100
+              }%)`;
+              ov.style.opacity = "1";
+            } else if (tr === "blur") {
+              ov.style.background = "rgba(0,0,0,0.18)";
+              ov.style.backdropFilter = `blur(${(k * 5).toFixed(1)}px)`;
+              ov.style.opacity = "1";
+            } else if (tr === "zoom") {
+              ov.style.background = `radial-gradient(circle at 50% 50%, rgba(0,0,0,0) 55%, rgba(184,255,77,${(
+                0.16 * k
+              ).toFixed(2)}) 100%)`;
+              ov.style.backdropFilter = "none";
+              ov.style.opacity = "1";
+            } else {
+              const white = tr === "flash";
+              ov.style.background = white
+                ? "rgba(255,255,255,0.92)"
+                : "rgba(0,0,0,0.88)";
+              ov.style.backdropFilter = "none";
+              ov.style.opacity = String((white ? 0.5 : 0.55) * k);
+            }
+          }
+        }
+        if (!vis) {
+          ov.style.opacity = "0";
+          ov.style.backdropFilter = "none";
+        }
+      }
+      // 3) Scene loop + readouts.
+      if (loopSceneRef.current && v && !v.paused) {
+        const seg = latestSeg.current;
+        if (seg && t >= (seg.end || 1e9) - 0.04) v.currentTime = seg.start || 0;
+      }
+      if (timecodeRef.current) timecodeRef.current.textContent = fmtTime(t);
+      if (beatMeterRef.current) {
+        const pct = Math.round(e * 100);
+        beatMeterRef.current.style.width = pct + "%";
+        beatMeterRef.current.style.opacity = String(0.55 + 0.45 * e);
+      }
+      // 4) Bit-wave timeline redraw.
+      const cv = canvasRef.current;
+      if (cv) {
+        drawTimeline(cv, {
+          beats: latestBeats.current,
+          segs: latestSeqs.current,
+          duration: latestDur.current,
+          playhead: t,
+          energy: e,
+          selectedId: latestSel.current,
+        });
+      }
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+  const togglePlay = () => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.paused) {
+      void v.play();
+      setPlaying(true);
+    } else {
+      v.pause();
+      setPlaying(false);
+    }
+  };
+  const seekFromEvent = (clientX: number) => {
+    const cv = canvasRef.current;
+    if (!cv) return;
+    const r = cv.getBoundingClientRect();
+    const dur = latestDur.current;
+    if (dur <= 0 || r.width <= 0) return;
+    const t = Math.max(0, Math.min(dur, ((clientX - r.left) / r.width) * dur));
+    playheadRef.current = t;
+    const v = videoRef.current;
+    if (v) v.currentTime = t;
+  };
+  const onWavePointerDown = (e: React.PointerEvent) => {
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    seekFromEvent(e.clientX);
+  };
+  const onWavePointerMove = (e: React.PointerEvent) => {
+    if (e.buttons & 1) seekFromEvent(e.clientX);
+  };
   return (
     <main className="shell">
       <header>
@@ -472,22 +871,88 @@ export default function Home() {
           )}
         </div>
         <div className="stage">
-          <div
-            className={"phone dropzone " + (drag ? "drag" : "")}
-            onDragOver={(e) => {
-              e.preventDefault();
-              setDrag(true);
-            }}
-            onDragLeave={() => setDrag(false)}
-            onDrop={onDrop}
-          >
-            {video ? (
-              <video src={video} controls autoPlay muted />
-            ) : (
-              <div className="empty">
-                <WandSparkles size={34} />
-                <strong>Your Short preview</strong>
-                <span>Upload footage to begin</span>
+          <div className="monitor">
+            <div
+              className={"phone dropzone phone-live " + (drag ? "drag" : "")}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDrag(true);
+              }}
+              onDragLeave={() => setDrag(false)}
+              onDrop={onDrop}
+            >
+              {video ? (
+                <div className="fx-stage" ref={monitorFxRef}>
+                  <video
+                    ref={videoRef}
+                    src={video}
+                    autoPlay
+                    muted
+                    playsInline
+                    onPlay={() => setPlaying(true)}
+                    onPause={() => setPlaying(false)}
+                  />
+                  <div className="fx-vignette" ref={vignetteRef} />
+                  <div className="fx-flash" ref={transOverlayRef} />
+                </div>
+              ) : (
+                <div className="empty">
+                  <WandSparkles size={34} />
+                  <strong>Your Short preview</strong>
+                  <span>Upload footage to begin</span>
+                </div>
+              )}
+              {video && (
+                <div className="monitor-chips">
+                  <span className="live-chip live">● Live</span>
+                  {previewSeg ? (
+                    <>
+                      <span className="live-chip fx" title="Live effect preview">
+                        fx · {previewEffect}
+                      </span>
+                      <span
+                        className="live-chip tx"
+                        title="Live transition preview"
+                      >
+                        in · {previewTransition}
+                      </span>
+                    </>
+                  ) : (
+                    <span className="live-chip tx">full clip</span>
+                  )}
+                </div>
+              )}
+            </div>
+            {video && (
+              <div className="plex-row">
+                <button
+                  className="plex-btn"
+                  onClick={togglePlay}
+                  title={playing ? "Pause preview" : "Play preview"}
+                >
+                  {playing ? <Pause size={15} /> : <Play size={15} />}
+                </button>
+                <span className="timecode" ref={timecodeRef}>
+                  0:00.0
+                </span>
+                <div className="beat-meter" title="Beat wave energy">
+                  <div className="beat-fill" ref={beatMeterRef} />
+                </div>
+                <button
+                  className={"plex-btn " + (loopScene ? "on" : "")}
+                  title="Loop the selected scene"
+                  disabled={!previewSeg}
+                  onClick={() => setLoopScene((v) => !v)}
+                >
+                  <RefreshCw size={14} />
+                </button>
+                <button
+                  className={"plex-btn " + (beatDrive ? "on" : "")}
+                  title="Drive effects with the music's beat wave"
+                  onClick={() => setBeatDrive((v) => !v)}
+                >
+                  <Activity size={14} />
+                </button>
               </div>
             )}
           </div>
@@ -650,6 +1115,18 @@ export default function Home() {
                         {dur.toFixed(1)}s
                         {s.role === "person" ? " person" : s.role === "scene" ? " scene" : ""}
                       </span>
+                      <span
+                        className="beat-tag"
+                        title="Beat energy of this scene (0–100)"
+                      >
+                        <i
+                          style={{
+                            width: `${Math.round(
+                              Math.min(1, Number(s.beat_intensity) || 0) * 100,
+                            )}%`,
+                          }}
+                        />
+                      </span>
                       <label
                         className="slot-timing"
                         title="How long this scene stays on screen"
@@ -700,9 +1177,13 @@ export default function Home() {
                         title="Transition into this scene"
                         value={transOverrides[s.id] || s.transition || "cut"}
                         onClick={(e) => e.stopPropagation()}
-                        onChange={(e) =>
-                          setTransOverrides((m) => ({ ...m, [s.id]: e.target.value }))
-                        }
+                        onChange={(e) => {
+                          setSelectedSlot(s.id);
+                          setTransOverrides((m) => ({
+                            ...m,
+                            [s.id]: e.target.value,
+                          }));
+                        }}
                       >
                         {TRANSITIONS.map((t) => (
                           <option key={t} value={t}>
@@ -715,9 +1196,10 @@ export default function Home() {
                         title="Visual effect for this scene"
                         value={effectSel[s.id] || "none"}
                         onClick={(e) => e.stopPropagation()}
-                        onChange={(e) =>
-                          setEffectSel((m) => ({ ...m, [s.id]: e.target.value }))
-                        }
+                        onChange={(e) => {
+                          setSelectedSlot(s.id);
+                          setEffectSel((m) => ({ ...m, [s.id]: e.target.value }));
+                        }}
                       >
                         {EFFECTS.map((t) => (
                           <option key={t} value={t}>
@@ -746,8 +1228,23 @@ export default function Home() {
         )}
         <div className="timeline">
           <div className="timeline-top">
-            <span>Timeline</span>
-            <span>{presets.find((p) => p.id === preset)?.name}</span>
+            <span>Timeline · beat wave</span>
+            <span>
+              {presets.find((p) => p.id === preset)?.name}
+              {beats.length > 0 && <> · {beats.length} beats mapped</>}
+            </span>
+          </div>
+          <div
+            className="wave-shell"
+            onPointerDown={onWavePointerDown}
+            onPointerMove={onWavePointerMove}
+          >
+            <canvas ref={canvasRef} className="wave-canvas" />
+            {!file && (
+              <div className="wave-empty">
+                Upload a video to see its beat wave
+              </div>
+            )}
           </div>
           <div className="track">
             {file ? (
