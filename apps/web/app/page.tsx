@@ -14,6 +14,8 @@ import {
   Pause,
   RefreshCw,
   Activity,
+  Volume2,
+  VolumeX,
 } from "lucide-react";
 import { readVideoMetadata, makeSmartCrop } from "./lib/video";
 import {
@@ -170,8 +172,19 @@ type WaveDatum = {
   selectedId: string | null;
 };
 
-// Bit-wave timeline: beat ticks + radiant ripples + ambient waveform + scene
-// blocks + playhead, redrawn every animation frame while the preview plays.
+// Pick a "nice" ruler step (seconds) so the time labels stay readable.
+function rulerStep(dur: number): number {
+  if (dur <= 6) return 1;
+  if (dur <= 15) return 2;
+  if (dur <= 40) return 5;
+  if (dur <= 90) return 10;
+  if (dur <= 180) return 15;
+  return 30;
+}
+
+// Bit-wave timeline: time ruler + beat ticks + radiant ripples + ambient
+// waveform + scene boundary lines + playhead. The interactive scene blocks
+// live in the HTML `.scene-lane` overlay on top of this canvas.
 function drawTimeline(cv: HTMLCanvasElement, o: WaveDatum) {
   const dpr = Math.min(2, window.devicePixelRatio || 1);
   const W = Math.max(80, cv.clientWidth || 0);
@@ -191,30 +204,48 @@ function drawTimeline(cv: HTMLCanvasElement, o: WaveDatum) {
     const ci = Math.floor((b / dur) * COLS);
     if (ci >= 0 && ci < COLS) amps[ci] += 0.55;
   }
-  // Background grid.
-  ctx.fillStyle = "rgba(255,255,255,0.035)";
-  ctx.fillRect(0, 0, W, H);
-  ctx.strokeStyle = "rgba(255,255,255,0.05)";
+  // Time ruler + vertical grid (labeled with full seconds).
+  ctx.fillStyle = "rgba(255,255,255,0.05)";
+  ctx.fillRect(0, 0, W, 22);
+  const step = rulerStep(dur);
+  ctx.strokeStyle = "rgba(255,255,255,0.08)";
   ctx.lineWidth = 1;
-  const steps = Math.min(16, Math.max(1, Math.floor(dur / 0.5)));
-  for (let i = 0; i <= steps; i++) {
-    const x = Math.round(px((i / steps) * dur)) + 0.5;
+  ctx.fillStyle = "rgba(255,255,255,0.55)";
+  ctx.font = "9px Inter, ui-sans-serif, system-ui, sans-serif";
+  for (let t = 0; t <= dur + 1e-6; t += step) {
+    const x = Math.round(px(t)) + 0.5;
     ctx.beginPath();
     ctx.moveTo(x, 8);
-    ctx.lineTo(x, H - 16);
+    ctx.lineTo(x, H - 18);
     ctx.stroke();
+    ctx.fillText(`${t.toFixed(step < 1 ? 1 : 0)}s`, x + 3, 22 - 7);
   }
+  // Segment boundary lines: faint dotted guides echoing the scene lane.
+  const seen: Record<number, boolean> = {};
+  o.segs.forEach((s: any) => {
+    const x = px(s.end || 0);
+    if (seen[x]) return;
+    seen[x] = true;
+    ctx.strokeStyle = "rgba(255,255,255,0.10)";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 4]);
+    ctx.beginPath();
+    ctx.moveTo(x, 24);
+    ctx.lineTo(x, H * 0.72);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  });
   const mid = H * 0.5;
   // Waveform bars (the "bit wave" ambient shape).
   const barW = W / COLS;
   for (let i = 0; i < COLS; i++) {
     const amp = Math.min(1, amps[i]);
-    const h = 3 + amp * 46;
+    const h = 3 + amp * 38;
     const x = i * barW + 1;
     ctx.fillStyle = `rgba(184,255,77,${(0.22 + 0.5 * amp).toFixed(2)})`;
-    ctx.fillRect(x, mid - h / 2, Math.max(1, barW - 2), h);
+    ctx.fillRect(x, 30 + (H - 48) * 0.5 - h / 2, Math.max(1, barW - 2), h);
     ctx.fillStyle = `rgba(184,255,77,${(0.07 + 0.18 * amp).toFixed(2)})`;
-    ctx.fillRect(x, mid + h / 2 - 5, Math.max(1, barW - 2), 5);
+    ctx.fillRect(x, 30 + (H - 48) * 0.5 + h / 2 - 5, Math.max(1, barW - 2), 5);
   }
   // Beat ticks + radiant ripples near the playhead.
   for (const b of o.beats) {
@@ -224,8 +255,8 @@ function drawTimeline(cv: HTMLCanvasElement, o: WaveDatum) {
     ctx.strokeStyle = `rgba(184,255,77,${(0.55 + 0.45 * hot).toFixed(2)})`;
     ctx.lineWidth = 1.5 + hot * 1.5;
     ctx.beginPath();
-    ctx.moveTo(x, 10);
-    ctx.lineTo(x, H * 0.74);
+    ctx.moveTo(x, 26);
+    ctx.lineTo(x, H * 0.72);
     ctx.stroke();
     if (hot > 0) {
       ctx.strokeStyle = `rgba(184,255,77,${(0.4 * (1 - hot)).toFixed(2)})`;
@@ -235,32 +266,11 @@ function drawTimeline(cv: HTMLCanvasElement, o: WaveDatum) {
       ctx.stroke();
     }
   }
-  // Scene blocks (reference plan) at the bottom.
-  const blockY = H - 15;
-  o.segs.forEach((s: any, i: number) => {
-    const x0 = px(s.start || 0);
-    const x1 = px(s.end || 0);
-    const color = SCENE_COLORS[i % SCENE_COLORS.length];
-    const sel = s.id === o.selectedId;
-    ctx.fillStyle = sel ? "rgba(184,255,77,0.22)" : color + "22";
-    ctx.strokeStyle = sel ? "#b8ff4d" : color;
-    ctx.lineWidth = sel ? 2 : 1;
-    const w = Math.max(1, x1 - x0 - 1);
-    if (typeof ctx.roundRect === "function") {
-      ctx.beginPath();
-      ctx.roundRect(x0 + 1, blockY, w, 12, 3);
-    } else {
-      ctx.beginPath();
-      ctx.rect(x0 + 1, blockY, w, 12);
-    }
-    ctx.fill();
-    ctx.stroke();
-    if (x1 - x0 > 20) {
-      ctx.fillStyle = sel ? "#b8ff4d" : "rgba(255,255,255,0.8)";
-      ctx.font = "9px Inter, ui-sans-serif, sans-serif";
-      ctx.fillText(String(i + 1), x0 + 5, blockY + 9);
-    }
-  });
+  // Total-duration label at the far right of the ruler.
+  ctx.fillStyle = "rgba(255,255,255,0.75)";
+  ctx.font = "9px Inter, ui-sans-serif, system-ui, sans-serif";
+  const endLabel = `${dur.toFixed(1)}s`;
+  ctx.fillText(endLabel, W - ctx.measureText(endLabel).width - 5, 15);
   // Playhead.
   const ph = px(o.playhead);
   ctx.strokeStyle = "rgba(255,255,255,0.95)";
@@ -377,6 +387,23 @@ export default function Home() {
   const latestSeg = useRef<any | null>(null);
   const loopSceneRef = useRef(false);
   const beatDriveRef = useRef(true);
+  // Preview audio + timeline scene interactions.
+  const [muted, setMuted] = useState(true);
+  const [sceneOrder, setSceneOrder] = useState<string[] | null>(null);
+  const [timelineDrag, setTimelineDrag] = useState<{
+    id: string;
+    mode: "move" | "trimL" | "trimR" | null;
+  } | null>(null);
+  const [dropIndex, setDropIndex] = useState<number | null>(null);
+  const didDragRef = useRef(false);
+  const dragMeta = useRef<{
+    id: string;
+    mode: "move" | "trimL" | "trimR";
+    startX: number;
+    el: HTMLElement | null;
+    index: number;
+    startDur: number;
+  } | null>(null);
   // Live WYSIWYG timeline: manual splits -> auto-spread of every asset
   // (Auto mode) -> duration edits reflowed cumulatively so scenes stay
   // contiguous. The render call sends exactly these segments + mapping, so
@@ -407,6 +434,17 @@ export default function Home() {
     } else {
       mapping = { ...slotAsset };
     }
+    // Timeline drag-reorder: present scenes in the user's chosen order
+    // (unknown/new ids — e.g. auto-spread splits — keep their natural place).
+    if (sceneOrder && sceneOrder.length) {
+      const byId = new Map(segs.map((s) => [s.id, s]));
+      const known = new Set(sceneOrder);
+      const merged = sceneOrder
+        .map((id) => byId.get(id))
+        .filter((s): s is any => Boolean(s));
+      const rest = segs.filter((s) => !known.has(s.id));
+      segs = [...merged, ...rest];
+    }
     let t = segs.length ? segs[0].start || 0 : 0;
     segs = segs.map((s) => {
       // Duration edits are stored as raw typing strings and clamped here, so
@@ -429,6 +467,7 @@ export default function Home() {
     splitAt,
     durationEdits,
     extraScenes,
+    sceneOrder,
   ]);
   const useCount = (assetId: string) =>
     Object.values(display.mapping).filter((id) => id === assetId).length;
@@ -439,6 +478,10 @@ export default function Home() {
     setMeta(await readVideoMetadata(f));
     setStatus("uploading");
     setError(null);
+    playheadRef.current = 0;
+    setPlaying(false);
+    setSceneOrder(null);
+    setDropIndex(null);
     try {
       const uploaded = await uploadVideo(f);
       setSourcePath(uploaded.source_path);
@@ -692,17 +735,6 @@ export default function Home() {
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
   }, []);
-  const togglePlay = () => {
-    const v = videoRef.current;
-    if (!v) return;
-    if (v.paused) {
-      void v.play();
-      setPlaying(true);
-    } else {
-      v.pause();
-      setPlaying(false);
-    }
-  };
   const seekFromEvent = (clientX: number) => {
     const cv = canvasRef.current;
     if (!cv) return;
@@ -720,6 +752,101 @@ export default function Home() {
   };
   const onWavePointerMove = (e: React.PointerEvent) => {
     if (e.buttons & 1) seekFromEvent(e.clientX);
+  };
+  // A fresh edit plan resets any manual timeline reorder.
+  useEffect(() => {
+    setSceneOrder(null);
+    setDropIndex(null);
+  }, [plan]);
+  // ---------- Scene blocks: drag to reorder, drag edges to trim ----------
+  const onScenePointerDown = (e: React.PointerEvent, s: any, i: number) => {
+    e.stopPropagation();
+    const target = e.target as HTMLElement;
+    const handle = target.closest(".trim-handle");
+    const mode: "move" | "trimL" | "trimR" = handle?.classList.contains("trim-l")
+      ? "trimL"
+      : handle?.classList.contains("trim-r")
+      ? "trimR"
+      : "move";
+    const el = e.currentTarget as HTMLElement;
+    el.setPointerCapture(e.pointerId);
+    didDragRef.current = false;
+    dragMeta.current = {
+      id: s.id,
+      mode,
+      startX: e.clientX,
+      el,
+      index: i,
+      startDur: Math.max(MIN_SLOT_DUR, (s.end || 0) - (s.start || 0)),
+    };
+    setTimelineDrag({ id: s.id, mode });
+    setDropIndex(null);
+  };
+  const onScenePointerMove = (e: React.PointerEvent, s: any, i: number) => {
+    const m = dragMeta.current;
+    if (!m || !m.el) return;
+    const cv = canvasRef.current;
+    if (!cv) return;
+    const rect = cv.getBoundingClientRect();
+    const pxPerSec = rect.width / Math.max(latestDur.current, 1e-6);
+    if (m.mode === "move") {
+      if (Math.abs(e.clientX - m.startX) > 4) didDragRef.current = true;
+      const dx = e.clientX - m.startX;
+      m.el.style.transform = `translateX(${dx}px) translateY(-5px) scale(1.04)`;
+      const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+      const n = latestSeqs.current.length;
+      const target = Math.round(frac * (n - 1));
+      setDropIndex(target === m.index ? null : target);
+    } else {
+      // Trimming an edge updates this scene's duration, which reflows the
+      // rest of the timeline and syncs the scene card's duration input.
+      const delta = e.clientX - m.startX;
+      let dur = m.startDur + (m.mode === "trimR" ? delta : -delta) / pxPerSec;
+      dur = Math.max(MIN_SLOT_DUR, Math.min(30, dur));
+      setDurationEdits((prev) => ({ ...prev, [m.id]: dur.toFixed(2) }));
+    }
+  };
+  const onScenePointerUp = () => {
+    const m = dragMeta.current;
+    if (!m) return;
+    if (m.el) m.el.style.transform = "";
+    if (m.mode === "move") {
+      const ids = latestSeqs.current.map((x: any) => x.id);
+      const from = ids.indexOf(m.id);
+      const target = dropIndex;
+      const n = ids.length;
+      if (from >= 0 && target != null && target >= 0 && target < n && target !== from) {
+        const next = [...ids];
+        next.splice(from, 1);
+        next.splice(target, 0, m.id);
+        setSceneOrder(next);
+      }
+    }
+    dragMeta.current = null;
+    setTimelineDrag(null);
+    setDropIndex(null);
+  };
+  const togglePlay = () => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.paused) {
+      // First play click is a user gesture: sound comes on immediately.
+      if (muted) {
+        setMuted(false);
+        v.muted = false;
+      }
+      void v.play();
+      setPlaying(true);
+    } else {
+      v.pause();
+      setPlaying(false);
+    }
+  };
+  const toggleMute = () => {
+    const v = videoRef.current;
+    const next = !muted;
+    setMuted(next);
+    if (v) v.muted = next;
   };
   return (
     <main className="shell">
@@ -887,10 +1014,13 @@ export default function Home() {
                     ref={videoRef}
                     src={video}
                     autoPlay
-                    muted
+                    muted={muted}
                     playsInline
                     onPlay={() => setPlaying(true)}
                     onPause={() => setPlaying(false)}
+                    onVolumeChange={() =>
+                      videoRef.current && setMuted(videoRef.current.muted)
+                    }
                   />
                   <div className="fx-vignette" ref={vignetteRef} />
                   <div className="fx-flash" ref={transOverlayRef} />
@@ -938,6 +1068,13 @@ export default function Home() {
                 <div className="beat-meter" title="Beat wave energy">
                   <div className="beat-fill" ref={beatMeterRef} />
                 </div>
+                <button
+                  className={"plex-btn" + (muted ? "" : " on")}
+                  title={muted ? "Unmute preview" : "Mute preview"}
+                  onClick={toggleMute}
+                >
+                  {muted ? <VolumeX size={15} /> : <Volume2 size={15} />}
+                </button>
                 <button
                   className={"plex-btn " + (loopScene ? "on" : "")}
                   title="Loop the selected scene"
@@ -1231,7 +1368,14 @@ export default function Home() {
             <span>Timeline · beat wave</span>
             <span>
               {presets.find((p) => p.id === preset)?.name}
-              {beats.length > 0 && <> · {beats.length} beats mapped</>}
+              {file && (
+                <>
+                  {" "}
+                  · <b>{fmtTime(totalDur)} total</b>
+                </>
+              )}
+              {display.segs.length > 0 && <> · {display.segs.length} scenes</>}
+              {beats.length > 0 && <> · {beats.length} beats</>}
             </span>
           </div>
           <div
@@ -1240,6 +1384,59 @@ export default function Home() {
             onPointerMove={onWavePointerMove}
           >
             <canvas ref={canvasRef} className="wave-canvas" />
+            {/* Interactive scene lane: drag a block to reorder, drag its
+                edges to trim — both keep the manual duration inputs in sync. */}
+            <div className="scene-lane">
+              {file &&
+                display.segs.map((s: any, i: number) => {
+                  const st = s.start || 0;
+                  const en = s.end || 0;
+                  const dur = Math.max(timelineDur, 1e-6);
+                  const left = `${(st / dur) * 100}%`;
+                  const width = `${Math.max(
+                    0.6,
+                    ((en - st) / dur) * 100,
+                  )}%`;
+                  const color = SCENE_COLORS[i % SCENE_COLORS.length];
+                  return (
+                    <div
+                      key={s.id}
+                      data-id={s.id}
+                      className={
+                        "scene-block" +
+                        (timelineDrag?.id === s.id ? " dragging" : "") +
+                        (dropIndex === i && timelineDrag?.id !== s.id
+                          ? " dim"
+                          : "")
+                      }
+                      style={{
+                        left,
+                        width,
+                        borderColor: color,
+                        background:
+                          (timelineDrag?.id === s.id ? "#b8ff4d" : color) +
+                          "2e",
+                      }}
+                      onPointerDown={(ev) => onScenePointerDown(ev, s, i)}
+                      onPointerMove={(ev) => onScenePointerMove(ev, s, i)}
+                      onPointerUp={onScenePointerUp}
+                      onPointerCancel={onScenePointerUp}
+                      onClick={() => {
+                        // A click (no drag) binds this scene to the monitor.
+                        if (!didDragRef.current)
+                          setSelectedSlot(s.id === selectedSlot ? null : s.id);
+                      }}
+                    >
+                      <span className="block-label">{i + 1}</span>
+                      <span className="block-time">
+                        {fmtTime(st)}–{fmtTime(en)}
+                      </span>
+                      <span className="trim-handle trim-l" />
+                      <span className="trim-handle trim-r" />
+                    </div>
+                  );
+                })}
+            </div>
             {!file && (
               <div className="wave-empty">
                 Upload a video to see its beat wave
@@ -1249,7 +1446,7 @@ export default function Home() {
           <div className="track">
             {file ? (
               <div className="clip" style={{ width: "100%" }}>
-                <span>SOURCE FOOTAGE</span>
+                <span>SOURCE FOOTAGE · {fmtTime(totalDur)}</span>
                 {status === "complete" && <small>AUTO EDIT PLAN READY</small>}
               </div>
             ) : (
