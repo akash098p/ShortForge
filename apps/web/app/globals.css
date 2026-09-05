@@ -414,3 +414,200 @@ h2 {
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
+
+/* --- recreation: auto/manual mapping + visual slot grid --- */
+.mode-toggle {
+  display: flex;
+  gap: 8px;
+  margin: 10px 0 2px;
+}
+.mode-toggle .chip {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.mode-toggle .chip.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #09090b;
+}
+.hint {
+  margin: 6px 0 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.asset-chip.clickable {
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.asset-chip.clickable:hover {
+  border-color: var(--accent);
+}
+.slot-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 10px;
+  margin: 12px 0 4px;
+}
+.slot-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  cursor: pointer;
+  transition: border-color 0.15s, transform 0.15s;
+}
+.slot-card:hover {
+  transform: translateY(-1px);
+  border-color: var(--muted);
+}
+.slot-card.sel {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(184, 255, 77, 0.2);
+}
+.slot-thumb {
+  position: relative;
+  aspect-ratio: 9 / 14;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #0d0d10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 11px;
+}
+.slot-thumb img,
+.slot-thumb video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.slot-thumb b {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  background: rgba(0, 0, 0, 0.65);
+  color: var(--accent);
+  border-radius: 5px;
+  padding: 1px 6px;
+  font-size: 10px;
+}
+.slot-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.slot-meta .trans-select {
+  margin-left: 0;
+  width: 100%;
+  text-transform: none;
+}
+.slot-timing {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+}
+.slot-timing input {
+  width: 100%;
+  min-width: 0;
+  background: #0d0d10;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  font: inherit;
+  padding: 2px 6px;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+.slot-timing input::-webkit-outer-spin-button,
+.slot-timing input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.slot-timing input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.slot-split {
+  background: transparent;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  color: var(--muted);
+  font: inherit;
+  font-size: 10px;
+  padding: 2px 6px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+.slot-split:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.slot-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.mini-asset {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+  background: #0d0d10;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.mini-asset:hover {
+  border-color: var(--accent);
+}
+.mini-asset img,
+.mini-asset video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.mini-clear {
+  flex: 1;
+  min-width: 40px;
+  background: transparent;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 10px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+.mini-clear:hover {
+  border-color: var(--muted);
+  color: var(--text);
+}
+.add-scene {
+  margin-top: 10px;
+  background: transparent;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  padding: 8px 14px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+.add-scene:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
