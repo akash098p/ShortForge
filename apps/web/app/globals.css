@@ -499,6 +499,200 @@ h2 {
   border-radius: 5px;
   padding: 1px 6px;
   font-size: 10px;
+  z-index: 2;
+}
+/* ============ Live per-card effect preview (Phase 12) ============
+   Picking an effect in a scene's dropdown makes that card's thumbnail
+   actually PLAY the effect, scaled by the scene's beat energy.
+   --fxamp  : 0.4..1   motion/color amplitude from the beat intensity
+   --fxdur  : 0.7..1.2 animation period inverted so hot scenes are faster */
+.thumb-media {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.thumb-media img,
+.thumb-media video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.thumb-auto {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  background: repeating-linear-gradient(
+    45deg,
+    #14141a 0 12px,
+    #1b1b22 12px 24px
+  );
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.fx-badge {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  z-index: 2;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.72);
+  color: var(--accent);
+  border: 1px solid rgba(184, 255, 77, 0.4);
+  pointer-events: none;
+  max-width: calc(100% - 8px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fx-badge.neutral {
+  color: var(--muted);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+/* -- motion effects (affect the whole media element) -- */
+.slot-thumb.fx-shake .thumb-media {
+  animation: fxShake var(--fxdur, 0.6s) ease-in-out infinite;
+  will-change: transform;
+}
+.slot-thumb.fx-pulse .thumb-media {
+  animation: fxPulse var(--fxdur, 0.9s) ease-in-out infinite;
+  will-change: transform;
+}
+.slot-thumb.fx-rotate .thumb-media {
+  animation: fxRotate var(--fxdur, 1.1s) ease-in-out infinite;
+  will-change: transform;
+}
+/* -- color effects (filter on the media, plus a grade overlay) -- */
+.slot-thumb.fx-vignette {
+  background: #000;
+}
+.slot-thumb.fx-vignette::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: radial-gradient(
+    ellipse at center,
+    transparent 42%,
+    rgba(0, 0, 0, 0.92) 100%
+  );
+  animation: fxVignette var(--fxdur, 1s) ease-in-out infinite;
+}
+.slot-thumb.fx-brighten img,
+.slot-thumb.fx-brighten video,
+.slot-thumb.fx-brighten .thumb-auto {
+  animation: fxBrighten var(--fxdur, 1s) ease-in-out infinite;
+}
+.slot-thumb.fx-moody img,
+.slot-thumb.fx-moody video,
+.slot-thumb.fx-moody .thumb-auto {
+  animation: fxMoody var(--fxdur, 1.3s) ease-in-out infinite;
+}
+.slot-thumb.fx-moody::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: linear-gradient(
+    160deg,
+    rgba(38, 60, 122, 0.3),
+    rgba(0, 0, 0, 0.28)
+  );
+}
+.slot-thumb.fx-bw img,
+.slot-thumb.fx-bw video,
+.slot-thumb.fx-bw .thumb-auto {
+  animation: fxBW var(--fxdur, 1.2s) ease-in-out infinite;
+}
+/* -- keyframes (amplitudes scale with --fxamp) -- */
+@keyframes fxShake {
+  0%,
+  100% {
+    transform: translate3d(calc(var(--fxamp, 1) * -5px), calc(var(--fxamp, 1) * 4px), 0)
+      scale(1.07);
+  }
+  25% {
+    transform: translate3d(calc(var(--fxamp, 1) * 5px), calc(var(--fxamp, 1) * -4px), 0)
+      scale(1.07);
+  }
+  50% {
+    transform: translate3d(calc(var(--fxamp, 1) * -4px), calc(var(--fxamp, 1) * -5px), 0)
+      scale(1.07);
+  }
+  75% {
+    transform: translate3d(calc(var(--fxamp, 1) * 4px), calc(var(--fxamp, 1) * 5px), 0)
+      scale(1.07);
+  }
+}
+@keyframes fxPulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(calc(1 + var(--fxamp, 1) * 0.08));
+  }
+}
+@keyframes fxRotate {
+  0%,
+  100% {
+    transform: rotate(calc(var(--fxamp, 1) * -3.4deg)) scale(1.08);
+  }
+  50% {
+    transform: rotate(calc(var(--fxamp, 1) * 3.4deg)) scale(1.08);
+  }
+}
+@keyframes fxVignette {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: calc(0.25 + var(--fxamp, 1) * 0.62);
+  }
+}
+@keyframes fxBrighten {
+  0%,
+  100% {
+    filter: brightness(1.12) saturate(1.08);
+  }
+  50% {
+    filter: brightness(calc(1.06 + var(--fxamp, 1) * 0.5))
+      saturate(calc(1.05 + var(--fxamp, 1) * 0.45));
+  }
+}
+@keyframes fxMoody {
+  0%,
+  100% {
+    filter: contrast(1.12) saturate(0.82) brightness(0.97);
+  }
+  50% {
+    filter: contrast(calc(1.12 + var(--fxamp, 1) * 0.12)) saturate(0.78)
+      brightness(0.88);
+  }
+}
+@keyframes fxBW {
+  0%,
+  100% {
+    filter: grayscale(1) contrast(1.15);
+  }
+  50% {
+    filter: grayscale(1) contrast(calc(1.15 + var(--fxamp, 1) * 0.25));
+  }
 }
 .slot-meta {
   display: flex;
