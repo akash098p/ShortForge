@@ -439,21 +439,99 @@ def transition_filter(kind: str, duration: float = 0.18) -> str:
     return "null"
 
 
+def _segment_beat_intensity(
+    beats: list[float], start: float, end: float
+) -> float:
+    """0..1 music-energy score for a segment derived from its beat window.
+
+    Counts beats inside the window (with a small halo either side) and
+    rewards a beat landing exactly on the cut point, so punchy segments
+    score high and quiet stretches score ~0. This is the "bit wave" datum
+    the frontend uses to drive its live preview.
+    """
+    if not beats:
+        return 0.0
+    dur = max(0.2, float(end) - float(start))
+    inside = [b for b in beats if start - 0.15 <= b <= end + 0.15]
+    if not inside:
+        return 0.0
+    density = (len(inside) - 1) / max(1.0, dur * 1.6)
+    on_cut = min(1.0, max(0.0, 1.0 - min(abs(b - start) for b in inside) * 4.0))
+    return round(min(1.0, 0.3 * on_cut + 0.7 * min(1.0, density)), 3)
+
+
+def _auto_effect(preset: str, index: int, seg: dict) -> str:
+    """Auto AI visual effect for a segment, tuned to the chosen preset.
+
+    Beat-aligned segments get motion effects (pulse/shake/bw) so the punch
+    of the music is visible; quiet speech stretches get gentle color
+    treatments. First segment stays clean.
+    """
+    kind = preset.lower()
+    speech = float(seg.get("speech_density", 0) or 0)
+    if index == 0:
+        return "none"
+    if seg.get("beat_sync"):
+        if kind == "energy":
+            return ("shake", "bw", "pulse")[index % 3]
+        if kind == "cinematic":
+            return "pulse"
+        if kind == "podcast":
+            return "vignette"
+        return ("pulse", "shake")[index % 2]
+    if kind == "energy":
+        return "pulse" if speech < 0.5 else "shake"
+    if kind == "cinematic":
+        return "moody" if speech >= 0.35 else "vignette"
+    if kind == "podcast":
+        return "brighten"
+    return "brighten" if speech < 0.35 else "pulse"
+
+
+def _auto_transition(preset: str, index: int, seg: dict, intensity: float) -> str:
+    """Auto AI transition into a segment, driven by beats + speech density."""
+    if index == 0:
+        return "none"
+    if seg.get("beat_sync"):
+        if intensity >= 0.75:
+            return "flash"
+        if intensity >= 0.45:
+            return "zoom"
+        return "pixelize" if preset.lower() == "energy" else "fade"
+    if float(seg.get("speech_density", 0) or 0) < 0.35:
+        return "fadeblack" if preset.lower() == "cinematic" else "fade"
+    if intensity >= 0.5:
+        return "flash"
+    return "cut"
+
+
 def apply_transition_metadata(
-    segments: list[dict], beats: list[float] | None = None
+    segments: list[dict],
+    beats: list[float] | None = None,
+    preset: str = "viral",
 ) -> list[dict]:
+    """Auto-editor pass: AI transitions, effects and beat intensity.
+
+    The first segment enters from black (no punch). Beat-aligned segments
+    get zoom/flash + motion effects, quiet segments fade, low-energy cuts
+    stay hard cuts, and every segment carries a 0..1 ``beat_intensity``
+    score that the web preview's live bit-wave and the recreation engine's
+    beat-synced effects both consume.
+    """
     beats = beats or []
     result = []
     for i, segment in enumerate(segments):
         item = dict(segment)
-        if i == 0:
-            item["transition"] = "none"
-        elif item.get("beat_sync"):
-            item["transition"] = "zoom" if i % 2 == 0 else "flash"
-        elif float(item.get("speech_density", 0)) < 0.35:
-            item["transition"] = "fade"
-        else:
-            item["transition"] = "cut"
+        try:
+            start = float(item.get("start", 0.0))
+            end = float(item.get("end", start + 1.0))
+        except (TypeError, ValueError):
+            start, end = 0.0, 1.0
+        intensity = _segment_beat_intensity(beats, start, end)
+        item["transition"] = _auto_transition(preset, i, item, intensity)
         item["transition_duration"] = 0.16 if item["transition"] != "cut" else 0.0
+        if not item.get("effect") or item.get("effect") == "none":
+            item["effect"] = _auto_effect(preset, i, item)
+        item["beat_intensity"] = intensity
         result.append(item)
     return result
