@@ -611,3 +611,182 @@ h2 {
   border-color: var(--accent);
   color: var(--accent);
 }
+.beat-tag {
+  flex: 1;
+  min-width: 34px;
+  height: 4px;
+  border-radius: 999px;
+  background: #232329;
+  overflow: hidden;
+  cursor: default;
+}
+.beat-tag i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent), #d4ff85);
+}
+
+/* ================= Live editor monitor (Phase 11) ================= */
+.monitor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(320px, 74vw);
+}
+.phone.phone-live {
+  position: relative;
+  width: 100%;
+}
+.fx-stage {
+  position: absolute;
+  inset: 0;
+  will-change: transform, filter;
+  border-radius: 22px;
+  overflow: hidden;
+}
+.fx-stage video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.fx-vignette {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  box-shadow: inset 0 0 150px rgba(0, 0, 0, 0.95);
+}
+.fx-flash {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.06s linear;
+}
+.monitor-chips {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  right: 10px;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  pointer-events: none;
+  z-index: 2;
+}
+.live-chip {
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: #e7e7ea;
+  backdrop-filter: blur(4px);
+}
+.live-chip.live {
+  color: #ff5d6c;
+  border-color: rgba(255, 93, 108, 0.5);
+  animation: beatpulse 0.9s ease-in-out infinite;
+}
+.live-chip.fx {
+  color: var(--accent);
+  border-color: rgba(184, 255, 77, 0.45);
+}
+.live-chip.tx {
+  color: #8ec5ff;
+  border-color: rgba(142, 197, 255, 0.4);
+}
+@keyframes beatpulse {
+  50% {
+    opacity: 0.45;
+  }
+}
+.plex-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.plex-btn {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: #0d0d10;
+  color: var(--text);
+  flex: none;
+}
+.plex-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.plex-btn.on {
+  background: rgba(184, 255, 77, 0.14);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.plex-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.timecode {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  color: var(--text);
+  min-width: 54px;
+  letter-spacing: 0.03em;
+}
+.beat-meter {
+  flex: 1;
+  height: 6px;
+  border-radius: 999px;
+  background: #0c0c0f;
+  border: 1px solid var(--line);
+  overflow: hidden;
+}
+.beat-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, var(--accent), #d4ff85);
+  border-radius: 999px;
+  transition: opacity 0.08s linear;
+}
+
+/* ================= Bit-wave timeline ================= */
+.wave-shell {
+  position: relative;
+  height: 128px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #0b0b0d;
+  overflow: hidden;
+  cursor: crosshair;
+  touch-action: none;
+}
+.wave-shell:hover {
+  border-color: var(--muted);
+}
+.wave-canvas {
+  display: block;
+  width: 100%;
+  height: 128px;
+}
+.wave-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 12px;
+  pointer-events: none;
+}
