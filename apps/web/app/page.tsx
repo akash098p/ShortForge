@@ -1,5 +1,5 @@
 "use client";
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   Upload,
   WandSparkles,
@@ -48,6 +48,84 @@ const presets: Preset[] = [
     icon: Scissors,
   },
 ];
+const TRANSITIONS = [
+  "cut",
+  "fade",
+  "zoom",
+  "flash",
+  "slideleft",
+  "slideright",
+  "slideup",
+  "slidedown",
+  "wipeleft",
+  "wiperight",
+  "circleopen",
+  "pixelize",
+  "rectcrop",
+  "smoothup",
+  "dissolve",
+  "fadeblack",
+  "blur",
+];
+const EFFECTS = [
+  "none",
+  "shake",
+  "pulse",
+  "rotate",
+  "vignette",
+  "brighten",
+  "moody",
+  "bw",
+];
+const MIN_SLOT_DUR = 0.4;
+
+// Client-side mirror of the backend auto-spread: the longest scenes are split
+// in half until there is a slot for every uploaded asset, then assets are
+// dealt onto the slots longest-first (files are reused round-robin when there
+// are more slots than files, so every upload always appears at least once).
+function distributeAllAssets(
+  segments: any[],
+  assets: UploadedAsset[],
+): { segments: any[]; mapping: Record<string, string> } {
+  if (!assets.length || !segments.length) return { segments, mapping: {} };
+  const slots = segments.map((s) => ({ ...s }));
+  const parts: Record<string, number> = {};
+  let guard = 0;
+  while (slots.length < assets.length && guard++ < 128) {
+    let idx = -1;
+    let best = 2 * MIN_SLOT_DUR;
+    slots.forEach((s, i) => {
+      const d = (s.end || 0) - (s.start || 0);
+      if (d > best) {
+        best = d;
+        idx = i;
+      }
+    });
+    if (idx < 0) break;
+    const s = slots[idx];
+    const mid = (s.start || 0) + ((s.end || 0) - (s.start || 0)) / 2;
+    const n = (parts[s.id] || 0) + 1;
+    parts[s.id] = n;
+    slots.splice(
+      idx,
+      1,
+      { ...s, end: mid },
+      { ...s, start: mid, id: `${s.id}-a${n}`, transition: "cut" },
+    );
+  }
+  const order = slots
+    .map((_, i) => i)
+    .sort(
+      (a, b) =>
+        slots[b].end - slots[b].start - (slots[a].end - slots[a].start),
+    );
+  const mapping: Record<string, string> = {};
+  order.forEach((slotIdx, i) => {
+    mapping[slots[slotIdx].id] = assets[i % assets.length].id;
+  });
+  return { segments: slots, mapping };
+}
+
 export default function Home() {
   const input = useRef<HTMLInputElement>(null);
   const [video, setVideo] = useState<string | null>(null);
@@ -62,11 +140,74 @@ export default function Home() {
   const [rendered, setRendered] = useState<string | null>(null);
   const assetInput = useRef<HTMLInputElement>(null);
   const [userAssets, setUserAssets] = useState<UploadedAsset[]>([]);
-  const [mapping, setMapping] = useState<Record<string, string>>({});
+  const [slotAsset, setSlotAsset] = useState<Record<string, string>>({});
+  const [autoMap, setAutoMap] = useState(true);
+  const [selectedSlot, setSelectedSlot] = useState<string | null>(null);
   const [assetBusy, setAssetBusy] = useState(false);
   const [recreating, setRecreating] = useState(false);
   const [recreation, setRecreation] = useState<string | null>(null);
   const [transOverrides, setTransOverrides] = useState<Record<string, string>>({});
+  const [effectSel, setEffectSel] = useState<Record<string, string>>({});
+  const [durationEdits, setDurationEdits] = useState<Record<string, string>>({});
+  const [splitAt, setSplitAt] = useState<Record<string, boolean>>({});
+  const [extraScenes, setExtraScenes] = useState<
+    { id: string; dur: number }[]
+  >([]);
+  // Live WYSIWYG timeline: manual splits -> auto-spread of every asset
+  // (Auto mode) -> duration edits reflowed cumulatively so scenes stay
+  // contiguous. The render call sends exactly these segments + mapping, so
+  // what the grid shows is precisely what FFmpeg renders.
+  const display = useMemo(() => {
+    const base: any[] = plan?.segments || [];
+    let segs: any[] = [];
+    for (const s of base) {
+      const d = (s.end || 0) - (s.start || 0);
+      if (splitAt[s.id] && d >= 2 * MIN_SLOT_DUR) {
+        const mid = (s.start || 0) + d / 2;
+        segs.push({ ...s, end: mid });
+        segs.push({ ...s, start: mid, id: `${s.id}-x1`, transition: "cut" });
+      } else {
+        segs.push({ ...s });
+      }
+    }
+    // Appended scenes ("+ Add scene"): brand-new slots so more of the user's
+    // files fit; they start unassigned (engine picks, or the user picks).
+    for (const ex of extraScenes) {
+      segs.push({ id: ex.id, start: 0, end: ex.dur, transition: "cut" });
+    }
+    let mapping: Record<string, string> = {};
+    if (autoMap) {
+      const spread = distributeAllAssets(segs, userAssets);
+      segs = spread.segments;
+      mapping = spread.mapping;
+    } else {
+      mapping = { ...slotAsset };
+    }
+    let t = segs.length ? segs[0].start || 0 : 0;
+    segs = segs.map((s) => {
+      // Duration edits are stored as raw typing strings and clamped here, so
+      // the input never fights the user mid-keystroke.
+      const parsed = parseFloat(durationEdits[s.id] ?? "");
+      const base = Number.isNaN(parsed)
+        ? (s.end || 0) - (s.start || 0)
+        : parsed;
+      const dur = Math.max(MIN_SLOT_DUR, Math.min(30, base));
+      const out = { ...s, start: t, end: t + dur };
+      t += dur;
+      return out;
+    });
+    return { segs, mapping };
+  }, [
+    plan,
+    autoMap,
+    userAssets,
+    slotAsset,
+    splitAt,
+    durationEdits,
+    extraScenes,
+  ]);
+  const useCount = (assetId: string) =>
+    Object.values(display.mapping).filter((id) => id === assetId).length;
   const onFile = async (f?: File) => {
     if (!f?.type.startsWith("video/")) return;
     setFile(f);
@@ -95,6 +236,12 @@ export default function Home() {
         preset,
       });
       setPlan(result);
+      // Fresh plan -> drop edits tied to the old plan's segment ids.
+      setSlotAsset({});
+      setDurationEdits({});
+      setSplitAt({});
+      setExtraScenes([]);
+      setSelectedSlot(null);
       setStatus("complete");
     } catch (e) {
       setStatus("error");
@@ -132,17 +279,9 @@ export default function Home() {
       const res = await uploadAssets(Array.from(files));
       const saved = res.assets.map((a) => ({ ...a, url: API_BASE + a.url }));
       setUserAssets((prev) => [...prev, ...saved]);
-      // Auto-map: spread the assets across the analyzed segments in order,
-      // keeping any mapping the user already chose manually.
-      const segs: any[] = plan?.segments || [];
-      setMapping((prev) => {
-        const next = { ...prev };
-        let k = 0;
-        for (const s of segs) {
-          if (!next[s.id]) next[s.id] = saved[k++ % saved.length].id;
-        }
-        return next;
-      });
+      // Auto mode ("use every file") is the default: the backend spreads
+      // ALL uploaded assets across the timeline. Manual mapping only kicks
+      // in when the user clicks specific slots below.
     } catch (e) {
       setError(e instanceof Error ? e.message : "Asset upload failed");
     } finally {
@@ -156,11 +295,15 @@ export default function Home() {
     try {
       const result = await renderRecreation({
         referencePath: sourcePath,
-        segments: (plan.segments || []).map((s: any) =>
-          transOverrides[s.id] ? { ...s, transition: transOverrides[s.id] } : s
-        ),
+        // WYSIWYG: send exactly the segments/mapping shown in the grid
+        // (auto-spread split points, manual picks, duration edits, effects).
+        segments: display.segs.map((s: any) => ({
+          ...s,
+          ...(transOverrides[s.id] ? { transition: transOverrides[s.id] } : {}),
+          ...(effectSel[s.id] ? { effect: effectSel[s.id] } : {}),
+        })),
         assets: userAssets,
-        mapping,
+        mapping: Object.keys(display.mapping).length ? display.mapping : null,
       });
       setRecreation(result.preview_url);
     } catch (e) {
@@ -175,6 +318,10 @@ export default function Home() {
     onFile(e.dataTransfer.files?.[0]);
   };
   const crop = meta ? makeSmartCrop(meta.width, meta.height) : null;
+  const totalDur = display.segs.reduce(
+    (acc: number, s: any) => acc + Math.max(0, (s.end || 0) - (s.start || 0)),
+    0,
+  );
   return (
     <main className="shell">
       <header>
@@ -379,56 +526,222 @@ export default function Home() {
                 <h2>My assets → reference segments</h2>
               </div>
             </div>
+            <div className="mode-toggle">
+              <button
+                className={autoMap ? "chip active" : "chip"}
+                onClick={() => {
+                  setAutoMap(true);
+                  setSelectedSlot(null);
+                }}
+              >
+                Auto (use all {userAssets.length})
+              </button>
+              <button
+                className={!autoMap ? "chip active" : "chip"}
+                onClick={() => setAutoMap(false)}
+              >
+                Manual
+              </button>
+            </div>
+            <p className="hint">
+              {autoMap
+                ? `Every uploaded file is dealt across the timeline automatically (long scenes split to make room) — the grid below shows exactly what will render. Total: ${totalDur.toFixed(1)}s`
+                : "Click a scene to pick its image or video — reuse any file as many times as you want, set its duration, split it, or use “+ Add scene” below for extra layers."}
+            </p>
             <div className="asset-strip">
               {userAssets.map((a) => (
-                <div key={a.id} className="asset-chip">
+                <div
+                  key={a.id}
+                  className="asset-chip clickable"
+                  role="button"
+                  tabIndex={0}
+                  title={selectedSlot ? "Assign this asset to the selected scene" : "Select a scene below, then click an asset"}
+                  onClick={() => {
+                    if (selectedSlot) {
+                      setAutoMap(false);
+                      setSlotAsset((m) => ({ ...m, [selectedSlot]: a.id }));
+                    }
+                  }}
+                >
                   {a.kind === "image" ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img src={a.url} alt={a.name} />
                   ) : (
                     <video src={a.url} muted playsInline />
                   )}
-                  <small>{a.kind}</small>
+                  <small>
+                    {a.kind}
+                    {useCount(a.id) > 0 ? ` ×${useCount(a.id)}` : ""}
+                  </small>
                 </div>
               ))}
             </div>
-            <div className="mapping">
-              {(plan.segments || []).map((s: any, i: number) => (
-                <div key={s.id || i} className="map-row">
-                  <span>
-                    #{i + 1} · {Math.max(0, (s.end || 0) - (s.start || 0)).toFixed(1)}s
-                    {s.role === "person" && <em className="role-chip">person</em>}
-                    {s.role === "scene" && <em className="role-chip scene">scene</em>}
-                    <select
-                      className="trans-select"
-                      title="Transition into this segment"
-                      value={transOverrides[s.id] || s.transition || "cut"}
-                      onChange={(e) =>
-                        setTransOverrides((m) => ({ ...m, [s.id]: e.target.value }))
-                      }
-                    >
-                      {["cut", "fade", "zoom", "flash", "slide", "wipe", "blur"].map((t) => (
-                        <option key={t} value={t}>
-                          {t}
-                        </option>
-                      ))}
-                    </select>
-                  </span>
-                  <select
-                    value={mapping[s.id] || ""}
-                    onChange={(e) =>
-                      setMapping((m) => ({ ...m, [s.id]: e.target.value }))
+            <div className="slot-grid">
+              {display.segs.map((s: any, i: number) => {
+                const dur = Math.max(0, (s.end || 0) - (s.start || 0));
+                const asset = userAssets.find(
+                  (x) => x.id === display.mapping[s.id],
+                );
+                const pickable = !autoMap && selectedSlot === s.id;
+                const canSplit =
+                  !autoMap &&
+                  dur >= 2 * MIN_SLOT_DUR &&
+                  !/-[ax]\d+$/.test(s.id);
+                return (
+                  <div
+                    key={s.id || i}
+                    className={"slot-card" + (selectedSlot === s.id ? " sel" : "")}
+                    onClick={() =>
+                      setSelectedSlot(s.id === selectedSlot ? null : s.id)
                     }
                   >
-                    {userAssets.map((a) => (
-                      <option key={a.id} value={a.id}>
-                        {a.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              ))}
+                    <div className="slot-thumb">
+                      {asset ? (
+                        asset.kind === "image" ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={asset.url} alt={asset.name} />
+                        ) : (
+                          <video src={asset.url} muted playsInline />
+                        )
+                      ) : (
+                        <span>auto</span>
+                      )}
+                      <b>#{i + 1}</b>
+                    </div>
+                    {pickable && (
+                      <div
+                        className="slot-picker"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {userAssets.map((a) => (
+                          <button
+                            key={a.id}
+                            className="mini-asset"
+                            title={a.name}
+                            onClick={() =>
+                              setSlotAsset((m) => ({ ...m, [s.id]: a.id }))
+                            }
+                          >
+                            {a.kind === "image" ? (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img src={a.url} alt={a.name} />
+                            ) : (
+                              <video src={a.url} muted playsInline />
+                            )}
+                          </button>
+                        ))}
+                        <button
+                          className="mini-clear"
+                          title="Let the engine choose for this scene"
+                          onClick={() =>
+                            setSlotAsset((m) => {
+                              const next = { ...m };
+                              delete next[s.id];
+                              return next;
+                            })
+                          }
+                        >
+                          clear
+                        </button>
+                      </div>
+                    )}
+                    <div className="slot-meta">
+                      <span>
+                        {dur.toFixed(1)}s
+                        {s.role === "person" ? " person" : s.role === "scene" ? " scene" : ""}
+                      </span>
+                      <label
+                        className="slot-timing"
+                        title="How long this scene stays on screen"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          placeholder={dur.toFixed(1)}
+                          value={durationEdits[s.id] ?? dur.toFixed(1)}
+                          onChange={(e) =>
+                            setDurationEdits((m) => ({
+                              ...m,
+                              [s.id]: e.target.value.replace(/[^0-9.]/g, ""),
+                            }))
+                          }
+                        />
+                        <span>s</span>
+                      </label>
+                      {canSplit && (
+                        <button
+                          className="slot-split"
+                          title="Cut this scene in half so another asset can fit"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSplitAt((m) => ({ ...m, [s.id]: !m[s.id] }));
+                          }}
+                        >
+                          {splitAt[s.id] ? "unsplit" : "split"}
+                        </button>
+                      )}
+                      {s.id.startsWith("ext-") && (
+                        <button
+                          className="slot-split"
+                          title="Remove this added scene"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setExtraScenes((xs) =>
+                              xs.filter((x) => x.id !== s.id),
+                            );
+                          }}
+                        >
+                          remove
+                        </button>
+                      )}
+                      <select
+                        className="trans-select"
+                        title="Transition into this scene"
+                        value={transOverrides[s.id] || s.transition || "cut"}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) =>
+                          setTransOverrides((m) => ({ ...m, [s.id]: e.target.value }))
+                        }
+                      >
+                        {TRANSITIONS.map((t) => (
+                          <option key={t} value={t}>
+                            {t}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        className="trans-select"
+                        title="Visual effect for this scene"
+                        value={effectSel[s.id] || "none"}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) =>
+                          setEffectSel((m) => ({ ...m, [s.id]: e.target.value }))
+                        }
+                      >
+                        {EFFECTS.map((t) => (
+                          <option key={t} value={t}>
+                            {t}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
+            <button
+              className="add-scene"
+              title="Append a brand-new scene to the end of the timeline"
+              onClick={() =>
+                setExtraScenes((xs) => [
+                  ...xs,
+                  { id: `ext-${Date.now()}`, dur: 2 },
+                ])
+              }
+            >
+              + Add scene (2s)
+            </button>
           </>
         )}
         <div className="timeline">
