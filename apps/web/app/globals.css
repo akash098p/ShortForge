@@ -790,3 +790,101 @@ h2 {
   font-size: 12px;
   pointer-events: none;
 }
+
+/* ============ Interactive scene lane (drag to reorder / trim) ============ */
+.scene-lane {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 7px;
+  height: 22px;
+  z-index: 3;
+  pointer-events: none; /* blocks re-enable individually */
+}
+.scene-block {
+  position: absolute;
+  top: 0;
+  height: 22px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 9px;
+  font-size: 9px;
+  color: #fff;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+  overflow: hidden;
+  white-space: nowrap;
+  box-shadow: 0 0 8px rgba(0, 0, 0, 0.35);
+  transition: box-shadow 0.12s, opacity 0.12s;
+  pointer-events: auto;
+  will-change: transform, width, left;
+}
+.scene-block:hover {
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.2),
+    0 3px 12px rgba(0, 0, 0, 0.5);
+}
+.scene-block.dragging {
+  cursor: grabbing;
+  z-index: 10;
+  box-shadow:
+    0 12px 28px rgba(0, 0, 0, 0.6),
+    0 0 0 1px #b8ff4d;
+  opacity: 0.96;
+}
+.scene-block.dim {
+  opacity: 0.28;
+}
+.block-label {
+  font-weight: 800;
+  background: rgba(0, 0, 0, 0.4);
+  border-radius: 4px;
+  padding: 0 4px;
+  line-height: 14px;
+  flex: none;
+  color: #fff;
+}
+.block-time {
+  color: rgba(255, 255, 255, 0.85);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  letter-spacing: -0.02em;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.trim-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  cursor: ew-resize;
+  z-index: 2;
+}
+.trim-handle::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 4px;
+  width: 2px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.7);
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.scene-block:hover .trim-handle::after,
+.trim-handle:hover::after {
+  opacity: 1;
+}
+.trim-l {
+  left: 0;
+}
+.trim-r {
+  right: 0;
+}
