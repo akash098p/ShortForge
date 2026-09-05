@@ -83,6 +83,17 @@ const EFFECTS = [
   "moody",
   "bw",
 ];
+// Compact 2-letter codes for the effect chips that sit on each thumbnail.
+const FX_SHORT: Record<string, string> = {
+  none: "∅",
+  shake: "sh",
+  pulse: "pl",
+  rotate: "ro",
+  vignette: "vi",
+  brighten: "br",
+  moody: "mo",
+  bw: "bw",
+};
 const MIN_SLOT_DUR = 0.4;
 
 // Scene colors used both in the scene cards and the live bit-wave timeline.
@@ -1201,6 +1212,10 @@ export default function Home() {
                   "--fxdur": (1.35 - fxIntensity * 0.65).toFixed(2) + "s",
                   "--fxamp": (0.4 + fxIntensity * 0.6).toFixed(2),
                 } as React.CSSProperties;
+                // Live transition on the card: the transition shared with the
+                // dropdown plays a looping entrance animation on this
+                // thumbnail (cut/none simply stay still).
+                const txEffect = transOverrides[s.id] || s.transition || "cut";
                 return (
                   <div
                     key={s.id || i}
@@ -1210,14 +1225,14 @@ export default function Home() {
                     }
                   >
                     <div
-                      className={"slot-thumb fx-" + fxEffect}
+                      className={"slot-thumb fx-" + fxEffect + " tx-" + txEffect}
                       style={fxStyle}
                       title={
                         fxEffect === "none"
-                          ? "No effect — pick one below to preview it live"
+                          ? `No effect — tap a chip below to preview it live (transition: ${txEffect}, playing live)`
                           : `Live preview: ${fxEffect} (beat energy ${Math.round(
                               fxIntensity * 100,
-                            )}%)`
+                            )}%) · transition ${txEffect} plays on this card`
                       }
                     >
                       <div className="thumb-media">
@@ -1226,7 +1241,13 @@ export default function Home() {
                             // eslint-disable-next-line @next/next/no-img-element
                             <img src={asset.url} alt={asset.name} />
                           ) : (
-                            <video src={asset.url} muted playsInline />
+                            <video
+                              src={asset.url}
+                              autoPlay
+                              loop
+                              muted
+                              playsInline
+                            />
                           )
                         ) : (
                           <div className="thumb-auto">
@@ -1235,6 +1256,51 @@ export default function Home() {
                         )}
                       </div>
                       <b>#{i + 1}</b>
+                      <select
+                        className="thumb-trans"
+                        title="Transition into this scene"
+                        value={transOverrides[s.id] || s.transition || "cut"}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => {
+                          setSelectedSlot(s.id);
+                          setTransOverrides((m) => ({
+                            ...m,
+                            [s.id]: e.target.value,
+                          }));
+                        }}
+                      >
+                        {TRANSITIONS.map((t) => (
+                          <option key={t} value={t}>
+                            {t}
+                          </option>
+                        ))}
+                      </select>
+                      {/* On-thumbnail effect picker: tap any chip and this
+                          card instantly plays that effect */}
+                      <div
+                        className="thumb-fx-bar"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {EFFECTS.map((fx) => (
+                          <button
+                            key={fx}
+                            className={
+                              "thumb-fx-chip" + (fxEffect === fx ? " on" : "")
+                            }
+                            title={
+                              fx === "none"
+                                ? "No effect"
+                                : `Apply ${fx} — watch this card animate live`
+                            }
+                            onClick={() => {
+                              setSelectedSlot(s.id);
+                              setEffectSel((m) => ({ ...m, [s.id]: fx }));
+                            }}
+                          >
+                            {FX_SHORT[fx]}
+                          </button>
+                        ))}
+                      </div>
                       <span
                         className={"fx-badge" + (fxEffect === "none" ? " neutral" : "")}
                       >
