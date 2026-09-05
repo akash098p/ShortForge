@@ -15,7 +15,11 @@ from services.tracking import detect_people, smooth_track, recover_track
 from services.broll import find_broll, make_broll_plan
 from services.media import apply_transition_metadata
 from services.assets import AssetError, list_assets, save_asset
-from services.recreation import _default_mapping, assign_segment_roles, render_recreation
+from services.recreation import (
+    assign_segment_roles,
+    distribute_all_assets,
+    render_recreation,
+)
 from pathlib import Path
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -141,18 +145,23 @@ def render_recreation_endpoint(req: RenderRecreationRequest):
             for a in req.assets
         ]
         # Phase 6: detect the reference's beats so cut points snap to them;
-        # Phase 5: fall back to the smart default mapping when the user has
-        # not chosen assets themselves.
+        # Phase 5: with no explicit mapping the engine auto-spreads EVERY
+        # uploaded asset across the timeline (splitting the longest segments
+        # to make room) so no file is left unused.
         beats: list[float] = []
         if req.reference_path:
             try:
                 beats = detect_beats(req.reference_path)
             except Exception:
                 beats = []
-        mapping = req.mapping or _default_mapping(req.segments, assets)
+        if req.mapping:
+            mapping = req.mapping
+            segments = req.segments
+        else:
+            segments, mapping = distribute_all_assets(req.segments, assets)
         render_recreation(
             req.reference_path,
-            req.segments,
+            segments,
             assets,
             mapping,
             str(output.resolve()),
@@ -163,7 +172,7 @@ def render_recreation_endpoint(req: RenderRecreationRequest):
             "output_path": str(output),
             "preview_url": f"/outputs/{output.name}",
             "size_bytes": os.path.getsize(output),
-            "segments_rendered": len(req.segments),
+            "segments_rendered": len(segments),
         }
     except Exception as e:
         # Never leave a partial file where the static mount would serve it.
