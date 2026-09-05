@@ -1189,6 +1189,18 @@ export default function Home() {
                   !autoMap &&
                   dur >= 2 * MIN_SLOT_DUR &&
                   !/-[ax]\d+$/.test(s.id);
+                // Live FX on the card: the same effect the dropdown selects
+                // plays on this thumbnail, scaled by the scene's beat energy
+                // (higher beat_intensity -> punchier, faster motion).
+                const fxEffect = effectSel[s.id] || s.effect || "none";
+                const fxIntensity = Math.min(
+                  1,
+                  Math.max(0.15, Number(s.beat_intensity) || 0.5),
+                );
+                const fxStyle = {
+                  "--fxdur": (1.35 - fxIntensity * 0.65).toFixed(2) + "s",
+                  "--fxamp": (0.4 + fxIntensity * 0.6).toFixed(2),
+                } as React.CSSProperties;
                 return (
                   <div
                     key={s.id || i}
@@ -1197,18 +1209,37 @@ export default function Home() {
                       setSelectedSlot(s.id === selectedSlot ? null : s.id)
                     }
                   >
-                    <div className="slot-thumb">
-                      {asset ? (
-                        asset.kind === "image" ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img src={asset.url} alt={asset.name} />
+                    <div
+                      className={"slot-thumb fx-" + fxEffect}
+                      style={fxStyle}
+                      title={
+                        fxEffect === "none"
+                          ? "No effect — pick one below to preview it live"
+                          : `Live preview: ${fxEffect} (beat energy ${Math.round(
+                              fxIntensity * 100,
+                            )}%)`
+                      }
+                    >
+                      <div className="thumb-media">
+                        {asset ? (
+                          asset.kind === "image" ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={asset.url} alt={asset.name} />
+                          ) : (
+                            <video src={asset.url} muted playsInline />
+                          )
                         ) : (
-                          <video src={asset.url} muted playsInline />
-                        )
-                      ) : (
-                        <span>auto</span>
-                      )}
+                          <div className="thumb-auto">
+                            <span>auto</span>
+                          </div>
+                        )}
+                      </div>
                       <b>#{i + 1}</b>
+                      <span
+                        className={"fx-badge" + (fxEffect === "none" ? " neutral" : "")}
+                      >
+                        {fxEffect === "none" ? "no fx" : fxEffect}
+                      </span>
                     </div>
                     {pickable && (
                       <div
@@ -1330,8 +1361,8 @@ export default function Home() {
                       </select>
                       <select
                         className="trans-select"
-                        title="Visual effect for this scene"
-                        value={effectSel[s.id] || "none"}
+                        title="Visual effect for this scene — pick one and watch this card preview it live"
+                        value={effectSel[s.id] || s.effect || "none"}
                         onClick={(e) => e.stopPropagation()}
                         onChange={(e) => {
                           setSelectedSlot(s.id);
