@@ -95,6 +95,10 @@ const FX_SHORT: Record<string, string> = {
   bw: "bw",
 };
 const MIN_SLOT_DUR = 0.4;
+// Monotonic counter makes appended-scene ids strictly unique even under
+// React StrictMode double-invocation / double-clicks within 1ms, so removal
+// always targets the exact scene that was clicked.
+let extSceneSeq = 0;
 
 // Scene colors used both in the scene cards and the live bit-wave timeline.
 const SCENE_COLORS = [
@@ -526,7 +530,7 @@ export default function Home() {
       setError(e instanceof Error ? e.message : "Analysis failed");
     }
   };
-  const renderShort = async () => {
+    const renderShort = async () => {
     if (!plan || !sourcePath) return;
     setStatus("rendering");
     setError(null);
@@ -548,6 +552,50 @@ export default function Home() {
       setStatus("error");
       setError(e instanceof Error ? e.message : "Render failed");
     }
+  };
+  // Remove a scene the user appended ("+ Add scene"). Removes the *exact*
+  // scene that was clicked even when it is an auto-split / manual-split child
+  // (ids like `ext-<ts>-a1` / `ext-<ts>-x1`) by resolving back to the base
+  // `ext-...` id, and clears every per-scene override so no ghost state can
+  // leave the wrong scene selected / rendered afterwards.
+  const removeScene = (seg: any) => {
+    if (!seg?.id) return;
+    const id = String(seg.id);
+    const baseId = id.replace(/-(a\d+|x\d+)+$/, "");
+    const isExt = baseId.startsWith("ext-");
+    const related = (k: string) => !isExt || k === baseId || k.startsWith(baseId + "-");
+    setExtraScenes((xs) =>
+      xs.filter((x) => x.id !== id && (isExt ? x.id !== baseId : true)),
+    );
+    setDurationEdits((m) => {
+      const n: Record<string, string> = {};
+      for (const k in m) if (related(k)) n[k] = m[k];
+      return n;
+    });
+    setSplitAt((m) => {
+      const n: Record<string, boolean> = {};
+      for (const k in m) if (related(k)) n[k] = m[k];
+      return n;
+    });
+    setEffectSel((m) => {
+      const n: Record<string, string> = {};
+      for (const k in m) if (related(k)) n[k] = m[k];
+      return n;
+    });
+    setTransOverrides((m) => {
+      const n: Record<string, string> = {};
+      for (const k in m) if (related(k)) n[k] = m[k];
+      return n;
+    });
+    setSlotAsset((m) => {
+      const n: Record<string, string> = {};
+      for (const k in m) if (related(k)) n[k] = m[k];
+      return n;
+    });
+    setSceneOrder((order) =>
+      order ? order.filter((id2: string) => related(id2)) : order,
+    );
+    setSelectedSlot((cur) => (cur && related(cur) ? null : cur));
   };
   const onAssetFiles = async (files?: FileList | null) => {
     if (!files?.length) return;
@@ -1398,9 +1446,7 @@ export default function Home() {
                           title="Remove this added scene"
                           onClick={(e) => {
                             e.stopPropagation();
-                            setExtraScenes((xs) =>
-                              xs.filter((x) => x.id !== s.id),
-                            );
+                            removeScene(s);
                           }}
                         >
                           remove
@@ -1445,19 +1491,22 @@ export default function Home() {
                   </div>
                 );
               })}
-            </div>
-            <button
-              className="add-scene"
-              title="Append a brand-new scene to the end of the timeline"
-              onClick={() =>
-                setExtraScenes((xs) => [
-                  ...xs,
-                  { id: `ext-${Date.now()}`, dur: 2 },
-                ])
-              }
-            >
-              + Add scene (2s)
-            </button>
+                          </div>
+              <button
+                className="add-scene"
+                title="Append a brand-new scene to the end of the timeline"
+                onClick={() =>
+                  setExtraScenes((xs) => [
+                    ...xs,
+                    {
+                      id: `ext-${Date.now()}-${++extSceneSeq}`,
+                      dur: 2,
+                    },
+                  ])
+                }
+              >
+                + Add scene (2s)
+              </button>
           </>
         )}
         <div className="timeline">
