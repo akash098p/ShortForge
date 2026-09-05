@@ -27,6 +27,24 @@ if str(API_DIR) not in sys.path:
     sys.path.insert(0, str(API_DIR))
 from services import media  # noqa: E402
 from services.subtitles import to_ass  # noqa: E402
+from services.recreation import (  # noqa: E402
+    _beat_env_expr,
+    _default_mapping,
+    _effect_filters,
+    _local_beats,
+    assign_segment_roles,
+    distribute_all_assets,
+    render_asset_segment,
+    render_recreation,
+    snap_segments_to_beats,
+)
+from services.assets import (  # noqa: E402
+    AssetError,
+    classify,
+    list_assets,
+    probe_asset,
+    save_asset,
+)
 
 
 def synth_source(path, w, h, dur=4.0, fps=30, with_audio=True):
@@ -257,6 +275,31 @@ class MediaRenderTests(unittest.TestCase):
         media.render_vertical(str(self.land), str(out), 0.0, 1.0, track=garbage)
         self._assert_normalized(out, expected_duration=1.0)
 
+    def test_ai_transition_metadata(self):
+        """Auto-editor assigns preset-aware transitions, effects and a 0..1
+        beat_intensity score per segment (the frontend's live beat-wave data)."""
+        segs = [
+            {"id": "a", "start": 0.0, "end": 1.0, "beat_sync": False, "speech_density": 0.1},
+            {"id": "b", "start": 1.0, "end": 1.8, "beat_sync": False, "speech_density": 0.9},
+            {"id": "c", "start": 1.8, "end": 2.0, "beat_sync": True, "speech_density": 0.9},
+        ]
+        tagged = media.apply_transition_metadata(segs, beats=[1.0, 2.0], preset="energy")
+        self.assertEqual(tagged[0]["transition"], "none")
+
+        # Beat-aligned scene -> punchy transition + motion effect.
+        end = tagged[-1]
+        self.assertIn(end["transition"], {"flash", "zoom", "pixelize"})
+        self.assertIn(end["effect"], {"shake", "bw", "pulse"})
+        for item in tagged:
+            self.assertGreaterEqual(item["beat_intensity"], 0.0)
+            self.assertLessEqual(item["beat_intensity"], 1.0)
+            self.assertIsInstance(item["beat_intensity"], float)
+        # Effects persist when already user-chosen; duplicates are untouched.
+        tagged2 = media.apply_transition_metadata(
+            [{"id": "x", "start": 0, "end": 1, "effect": "moody"}], preset="viral"
+        )
+        self.assertEqual(tagged2[0]["effect"], "moody")
+
     def test_render_plan_end_to_end(self):
         segments = [
             {"start": 0.0, "end": 1.2, "zoom": 1.0},
@@ -440,6 +483,311 @@ class MediaRenderTests(unittest.TestCase):
         self.assertTrue(has_faststart(path), f"faststart missing for {path}")
         if info["audio"]:
             self.assertEqual(info["audio"].get("codec_name"), "aac")
+
+
+class RecreationTests(unittest.TestCase):
+    """Recreation engine: user assets rendered into the reference structure."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = Path(tempfile.mkdtemp(prefix="sf-recreation-"))
+        # Reference clip WITH audio -> its track is muxed onto the recreation.
+        cls.reference = cls.tmp / "ref.mp4"
+        synth_source(cls.reference, 480, 854, dur=4.0, with_audio=True)
+        # Portrait video asset and a wide (landscape) image asset, so both
+        # geometry paths (portrait cover-crop with drift, wide blur-pad fit)
+        # are exercised, and both asset kinds (video + still image).
+        cls.video_asset = cls.tmp / "asset-video.mp4"
+        synth_source(cls.video_asset, 720, 1280, dur=2.0, with_audio=True)
+        cls.image_asset = cls.tmp / "asset-image.png"
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-v", "error",
+                "-f", "lavfi", "-i", "color=c=orange:s=1280x720:d=1",
+                "-frames:v", "1", str(cls.image_asset),
+            ],
+            check=True,
+        )
+        cls.segments = [
+            {"id": "seg-1", "start": 0.0, "end": 1.0, "zoom": 1.0},
+            {
+                "id": "seg-2", "start": 1.0, "end": 2.2,
+                "zoom": 1.1, "transition": "fade",
+            },
+            {"id": "seg-3", "start": 2.2, "end": 3.4, "zoom": 1.0},
+        ]
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_render_recreation_with_mapped_assets(self):
+        out = self.tmp / "recreation.mp4"
+        render_recreation(
+            str(self.reference),
+            self.segments,
+            [probe_asset(self.video_asset), probe_asset(self.image_asset)],
+            {"seg-1": self.video_asset.stem, "seg-2": self.image_asset.stem},
+            str(out),
+        )
+        self.assertTrue(out.exists(), "recreation output missing")
+        info = probe(out)
+        v = info["video"]
+        self.assertEqual(v["codec_name"], "h264")
+        self.assertEqual((v["width"], v["height"]), (1080, 1920))
+        self.assertEqual(v["pix_fmt"], "yuv420p")
+        self.assertEqual(v["sample_aspect_ratio"], "1:1")
+        self.assertEqual(v["display_aspect_ratio"], "9:16")
+        self.assertEqual(v["r_frame_rate"], "30/1")
+        # 1.0 + 1.2 + 1.2 = 3.4s of planned segments.
+        self.assertAlmostEqual(
+            float(info["format"]["duration"]), 3.4, delta=0.35
+        )
+        # Reference audio must be present (music/beat timing preserved).
+        self.assertEqual(info["audio"].get("codec_name"), "aac")
+        self.assertTrue(has_faststart(out), "faststart missing")
+        out.unlink(missing_ok=True)
+
+    def test_unmapped_segments_fall_back_and_render(self):
+        out = self.tmp / "recreation-fallback.mp4"
+        # No mapping at all: sequential fallback must still succeed.
+        render_recreation(
+            None, self.segments[:2],
+            [probe_asset(self.image_asset), probe_asset(self.video_asset)],
+            {}, str(out),
+        )
+        info = probe(out)
+        self.assertEqual((info["video"]["width"], info["video"]["height"]), (1080, 1920))
+        # No reference -> silent output is expected.
+        self.assertEqual(info["audio"], {})
+        out.unlink(missing_ok=True)
+
+    def test_missing_asset_file_raises(self):
+        with self.assertRaises(Exception):
+            render_asset_segment(
+                {"id": "x", "name": "gone.png", "path": str(self.tmp / "gone.png"),
+                 "kind": "image", "width": 100, "height": 100, "duration": 0},
+                1.0, 1.0, 0, self.tmp / "never.mp4",
+            )
+
+    def test_asset_registry_roundtrip(self):
+        self.assertEqual(classify("photo.JPG"), "image")
+        self.assertEqual(classify("clip.MOV"), "video")
+        with self.assertRaises(AssetError):
+            classify("song.mp3")
+        saved = save_asset("my photo.png", b"\x89PNG-not-really", self.tmp)
+        self.assertEqual(saved["kind"], "image")
+        self.assertTrue(Path(saved["path"]).exists())
+        names = [a["name"] for a in list_assets(self.tmp)]
+        self.assertIn(saved["name"], names)
+        Path(saved["path"]).unlink(missing_ok=True)
+
+    def test_snap_segments_to_beats(self):
+        segments = [
+            {"id": "a", "start": 0.0, "end": 1.03},
+            {"id": "b", "start": 1.03, "end": 2.5},
+            {"id": "c", "start": 2.5, "end": 4.0},
+        ]
+        snapped = snap_segments_to_beats(segments, [1.0, 2.0, 3.0])
+        # 1.03 sits within tolerance of beat 1.0 -> snapped.
+        self.assertEqual(snapped[0]["end"], 1.0)
+        self.assertEqual(snapped[1]["start"], 1.0)
+        # 2.5 has no beat within 0.12s -> left alone.
+        self.assertEqual(snapped[1]["end"], 2.5)
+        self.assertEqual(snapped[2]["start"], 2.5)
+        # Boundaries stay contiguous and durations renderable.
+        for a, b in zip(snapped, snapped[1:]):
+            self.assertEqual(a["end"], b["start"])
+            self.assertGreaterEqual(a["end"] - a["start"], 0.2)
+        # Empty beats -> plan returned unchanged.
+        self.assertEqual(snap_segments_to_beats(segments, []), segments)
+
+    def test_default_mapping_rules(self):
+        assets = [
+            {"id": "img-1", "kind": "image"},
+            {"id": "img-2", "kind": "image"},
+            {"id": "vid-1", "kind": "video"},
+        ]
+        segments = [
+            {"id": "s1", "start": 0.0, "end": 0.3},  # ultra-short -> image
+            {"id": "s2", "start": 0.3, "end": 1.4},
+            {"id": "s3", "start": 1.4, "end": 2.6},
+        ]
+        m = _default_mapping(segments, assets)
+        self.assertEqual(m["s1"], "img-1")
+        # No asset repeats on consecutive segments.
+        self.assertNotEqual(m["s2"], m["s1"])
+        self.assertNotEqual(m["s3"], m["s2"])
+
+    def test_zoom_transition_uses_real_xfade(self):
+        # seg-2 enters with a fade and seg-3 with a zoom: all three live in
+        # ONE xfade run (single extra encode), output stays normalized and
+        # the reference audio is still muxed.
+        segments = [
+            {"id": "seg-1", "start": 0.0, "end": 1.0, "zoom": 1.0},
+            {
+                "id": "seg-2", "start": 1.0, "end": 2.0,
+                "zoom": 1.1, "transition": "fade",
+            },
+            {
+                "id": "seg-3", "start": 2.0, "end": 3.0,
+                "zoom": 1.0, "transition": "zoom",
+            },
+        ]
+        out = self.tmp / "recreation-xfade.mp4"
+        render_recreation(
+            str(self.reference),
+            segments,
+            [probe_asset(self.image_asset), probe_asset(self.video_asset)],
+            {
+                "seg-1": self.image_asset.stem,
+                "seg-2": self.video_asset.stem,
+                "seg-3": self.image_asset.stem,
+            },
+            str(out),
+        )
+        self.assertTrue(out.exists(), "xfade recreation output missing")
+        info = probe(out)
+        self.assertEqual(
+            (info["video"]["width"], info["video"]["height"]), (1080, 1920)
+        )
+        self.assertEqual(info["video"]["sample_aspect_ratio"], "1:1")
+        self.assertEqual(info["video"]["r_frame_rate"], "30/1")
+        self.assertEqual(info["audio"].get("codec_name"), "aac")
+        out.unlink(missing_ok=True)
+
+    def test_assign_segment_roles(self):
+        segments = [
+            {"id": "s1", "start": 0.0, "end": 1.0},
+            {"id": "s2", "start": 1.0, "end": 2.0},
+            {"id": "bad", "start": "x", "end": 2.0},
+        ]
+        tracking = [{"time": 1.5}, {"time": 0.5}]
+        roles = assign_segment_roles(segments, tracking)
+        self.assertEqual(roles[0]["role"], "person")  # sample inside [0, 1]
+        self.assertEqual(roles[1]["role"], "person")  # sample inside [1, 2]
+        # Unparsable segments default to "scene" instead of raising.
+        self.assertEqual(roles[2]["role"], "scene")
+        # Without tracking everything is a scene.
+        self.assertTrue(
+            all(r["role"] == "scene" for r in assign_segment_roles(segments, []))
+        )
+        # Original dicts are not mutated.
+        self.assertNotIn("role", segments[0])
+
+    def test_default_mapping_prefers_orientation_by_role(self):
+        assets = [
+            {"id": "portrait-1", "kind": "image", "width": 720, "height": 1280},
+            {"id": "wide-1", "kind": "image", "width": 1280, "height": 720},
+        ]
+        segments = [
+            {"id": "p1", "start": 0.0, "end": 1.0, "role": "person"},
+            {"id": "sc1", "start": 1.0, "end": 2.0, "role": "scene"},
+        ]
+        m = _default_mapping(segments, assets)
+        self.assertEqual(m["p1"], "portrait-1")
+        self.assertEqual(m["sc1"], "wide-1")
+        # No role info -> still assigns something valid.
+        m2 = _default_mapping(
+            [{"id": "x", "start": 0.0, "end": 1.0}], assets
+        )
+        self.assertIn(m2["x"], {"portrait-1", "wide-1"})
+
+    def test_distribute_all_assets_uses_every_file(self):
+        """More assets than segments -> long segments split, all files used."""
+        segments = [
+            {"id": "a", "start": 0.0, "end": 3.0},
+            {"id": "b", "start": 3.0, "end": 4.0},
+            {"id": "c", "start": 4.0, "end": 7.0},
+            {"id": "d", "start": 7.0, "end": 8.0},
+        ]
+        assets = [{"id": f"img{i}", "kind": "image"} for i in range(8)]
+        segs, mapping = distribute_all_assets(segments, assets)
+        self.assertEqual(len(segs), 8)
+        used = set(mapping.values())
+        self.assertEqual(used, {a["id"] for a in assets})
+        # Contiguity and total duration are preserved.
+        total_before = sum(s["end"] - s["start"] for s in segments)
+        total_after = sum(s["end"] - s["start"] for s in segs)
+        self.assertAlmostEqual(total_before, total_after, places=6)
+        for i in range(len(segs) - 1):
+            self.assertAlmostEqual(
+                float(segs[i]["end"]), float(segs[i + 1]["start"]), places=6
+            )
+        # Split parts enter with a hard cut; durations stay >= 0.4s.
+        for s in segs:
+            self.assertGreaterEqual(s["end"] - s["start"], 0.4)
+        splits = [s for s in segs if "-p" in str(s.get("id", ""))]
+        for s in splits:
+            self.assertEqual(s.get("transition"), "cut")
+
+    def test_distribute_short_segments_prefers_stills(self):
+        """Ultra-short slots swap a video for a still image when possible."""
+        segments = [
+            {"id": "fast", "start": 0.0, "end": 0.4},
+            {"id": "long", "start": 0.4, "end": 2.4},
+        ]
+        assets = [
+            {"id": "vid", "kind": "video"},
+            {"id": "pic", "kind": "image"},
+        ]
+        _, mapping = distribute_all_assets(segments, assets)
+        self.assertEqual(mapping["fast"], "pic")
+        self.assertEqual(mapping["long"], "vid")
+
+    def test_effect_filter_chains(self):
+        """Named effects produce valid post-geometry chains; none -> empty."""
+        self.assertEqual(_effect_filters(None, 0, 1.0), "")
+        self.assertEqual(_effect_filters("none", 0, 1.0), "")
+        for name in ("shake", "pulse", "rotate"):
+            chain = _effect_filters(name, 1, 1.5)
+            self.assertIn(f"crop={media.OUT_W}:{media.OUT_H}", chain)
+        self.assertIn("vignette", _effect_filters("vignette", 0, 1.0))
+        self.assertIn("eq=", _effect_filters("brighten", 0, 1.0))
+        self.assertIn("hue=s=0", _effect_filters("bw", 0, 1.0))
+
+    def test_beat_synced_effects_embed_energy_envelope(self):
+        """Motion effects multiply amplitude by a beat-energy envelope when
+        reference beats are supplied, but keep the exact same shape without
+        beats (so old renders are unchanged)."""
+        plain = _effect_filters("shake", 0, 1.0)
+        synced = _effect_filters("shake", 0, 1.0, beats=[0.5, 1.0])
+        self.assertNotEqual(synced, plain)
+        self.assertIn("1-3*(", synced)
+        self.assertIn("abs(t-0.", synced)
+        self.assertIn(f"crop={media.OUT_W}:{media.OUT_H}", synced)
+        # Local-beat shifting maps reference time into the segment clock:
+        # beats 1.0/2.0 are inside the halo [-0.2, 3.2], 4.0/9.0 are not.
+        local = _local_beats([1.0, 2.0, 4.0, 9.0], seg_start=0.5, dur=2.0)
+        self.assertEqual(local, [0.5, 1.5])
+        # beats-relative helper: no beats -> None (static amplitude).
+        self.assertIsNone(_local_beats([], 0.0, 1.0))
+        self.assertIsNone(_local_beats(None, 0.0, 1.0))
+        # Static envelope stays identical to pre-beat behavior.
+        self.assertEqual(_beat_env_expr([]), "1.0")
+        self.assertIn("min(", _beat_env_expr([0.25, 1.0]))
+
+    def test_beat_synced_effects_render_in_ffmpeg(self):
+        """The beat-energy envelope expression must actually render: motion
+        effects with reference beats keep producing a normalized segment."""
+        for name in ("shake", "pulse"):
+            out = self.tmp / f"beat-{name}.mp4"
+            render_asset_segment(
+                probe_asset(self.video_asset),
+                1.0,
+                1.1,
+                0,
+                out,
+                effect=name,
+                beats=[0.4, 0.7, 1.0],  # reference-time hits inside the segment
+                seg_start=0.0,
+            )
+            self.assertTrue(out.exists(), f"beat-synced {name} render missing")
+            info = probe(out)
+            v = info["video"]
+            self.assertEqual((v["width"], v["height"]), (1080, 1920))
+            self.assertEqual(v["codec_name"], "h264")
+            self.assertTrue(has_faststart(out))
 
 
 if __name__ == "__main__":
